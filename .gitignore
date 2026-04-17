@@ -1,0 +1,6 @@
+node_modules/
+dist/
+public/data/master_data.csv
+.env
+.env.local
+Desktop.ini
