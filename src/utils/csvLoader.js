@@ -34,7 +34,10 @@ function parseCsv(csv) {
   const COL_DATE   = idx['納品日']        ?? 1;
   const COL_PHONE  = idx['宅配先電話番号'] ?? 10;
   const COL_BRANCH = idx['送り先名']      ?? 11;
+  const COL_CODE   = idx['品番']          ?? 30;
+  const COL_NAME   = idx['商品名']        ?? 31;
   const COL_ITEM   = idx['分析名(大)']    ?? 32;
+  const COL_PRICE  = idx['単価']          ?? 38;
   const COL_QTY    = idx['数量']          ?? 39;
   const COL_PROFIT = idx['粗利']          ?? 40;
   const COL_LEASE  = idx['メンテ']        ?? 41;
@@ -55,13 +58,17 @@ function parseCsv(csv) {
   for (let i = 1; i < lines.length; i++) {
     const vals = parseCSVLine(lines[i]);
 
-    const dateVal   = vals[COL_DATE]?.trim();
-    const phone     = vals[COL_PHONE]?.trim();
-    const branchRaw = vals[COL_BRANCH]?.trim();
-    const item      = vals[COL_ITEM]?.trim();
-    const qty       = parseFloat(vals[COL_QTY]?.trim()) || 0;
-    const profit    = parseFloat(vals[COL_PROFIT]?.trim()) || 0;
-    const lease     = vals[COL_LEASE]?.trim() || '';
+    const dateVal     = vals[COL_DATE]?.trim();
+    const phone       = vals[COL_PHONE]?.trim();
+    const branchRaw   = vals[COL_BRANCH]?.trim();
+    const productCode = vals[COL_CODE]?.trim() || '(品番なし)';
+    const productName = vals[COL_NAME]?.trim() || '';
+    const item        = vals[COL_ITEM]?.trim();
+    const unitPrice   = parseFloat(vals[COL_PRICE]?.trim()) || 0;
+    const qty         = parseFloat(vals[COL_QTY]?.trim()) || 0;
+    const profit      = parseFloat(vals[COL_PROFIT]?.trim()) || 0;
+    const lease       = vals[COL_LEASE]?.trim() || '';
+    const sales       = Math.round(unitPrice * qty);
 
     // 電話番号で正規化した部店名（同一電話番号は同じ部店として扱う）
     const branch = (phone && phoneBranchMap[phone]) || branchRaw || '(未分類)';
@@ -75,8 +82,11 @@ function parseCsv(csv) {
       month: dateInfo.month,
       leaseCompany: lease,
       branch,
+      productCode,
+      productName,
       item: item || '(未分類)',
       quantity: qty,
+      sales,
       profit,
     });
   }

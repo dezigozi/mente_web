@@ -22,6 +22,70 @@ export function filterRows(rows, { leaseCompany, startMonth, endMonth }) {
   });
 }
 
+// ===== 新階層集計関数 =====
+
+function aggregateByField(rows, years, keyFn) {
+  const map = {};
+  rows.forEach(row => {
+    const key = keyFn(row) || '(未分類)';
+    if (!map[key]) {
+      map[key] = { name: key, profit: {}, quantity: {} };
+      years.forEach(y => { map[key].profit[y] = 0; map[key].quantity[y] = 0; });
+    }
+    if (row.fiscalYear && years.includes(row.fiscalYear)) {
+      map[key].profit[row.fiscalYear]   += row.profit   || 0;
+      map[key].quantity[row.fiscalYear] += row.quantity || 0;
+    }
+  });
+  return Object.values(map).sort((a, b) => {
+    const latestYear = years[years.length - 1];
+    return (b.profit[latestYear] || 0) - (a.profit[latestYear] || 0);
+  });
+}
+
+/** Level 1 (両パターン共通): リース会社別 */
+export function aggregateByLease(rows, years) {
+  return aggregateByField(rows, years, r => r.leaseCompany);
+}
+
+/** Pattern A Level 2: 分類別（リース会社内） */
+export function aggregateByItemForLease(rows, years, leaseCo) {
+  return aggregateByField(
+    rows.filter(r => (r.leaseCompany || '(未分類)') === leaseCo),
+    years, r => r.item
+  );
+}
+
+/** Pattern B Level 2: 工場別（リース会社内） */
+export function aggregateByBranchForLease(rows, years, leaseCo) {
+  return aggregateByField(
+    rows.filter(r => (r.leaseCompany || '(未分類)') === leaseCo),
+    years, r => r.branch
+  );
+}
+
+/** Pattern B Level 3: 分類別（リース会社＋工場内） */
+export function aggregateByItemForBranch(rows, years, leaseCo, branch) {
+  return aggregateByField(
+    rows.filter(r =>
+      (r.leaseCompany || '(未分類)') === leaseCo &&
+      (r.branch       || '(未分類)') === branch
+    ),
+    years, r => r.item
+  );
+}
+
+/** Leaf (両パターン共通): 品番別 */
+export function aggregateByProductCode(rows, years, { leaseCo, branch, item }) {
+  let filtered = rows;
+  if (leaseCo) filtered = filtered.filter(r => (r.leaseCompany || '(未分類)') === leaseCo);
+  if (branch)  filtered = filtered.filter(r => (r.branch       || '(未分類)') === branch);
+  if (item)    filtered = filtered.filter(r => (r.item         || '(未分類)') === item);
+  return aggregateByField(filtered, years, r => r.productCode);
+}
+
+// ===== 旧集計関数（後方互換） =====
+
 /**
  * 第1階層: 部店別集計
  */
