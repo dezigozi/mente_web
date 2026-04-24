@@ -29,6 +29,7 @@ src/
 └── utils/
     ├── aggregator.js  # 純粋関数のみ。副作用・状態を持たない
     ├── csvLoader.js   # CSV パース専用。UI ロジックを混入しない
+    ├── jpPrefecture.js  # 住所1から都道府県推定（正規化・代表表記用）
     └── db.js          # IndexedDB 操作専用
 ```
 
@@ -39,20 +40,32 @@ src/
 
 ## データフロー
 
+### 分析ダッシュボード（大規模データ前提）
+
+`rawData.rows` を**同条件で二重に全件走査しない**こと。会計月は1回 `filterRowsInMonthRange`（`aggregator.js`）にかけ、得た `rowsInMonth` に対してリース・得意先は `Set` で OR 条件を当てる。`filterRows()` による「月＋リース＋得意先」の直列利用は、**同じ操作で二周目の全件走査を生む**ため、ダッシュ用導出では避ける（CSV エクスポート等の一発処理では従来どおり `filterRows` 可）。
+
 ```
 CSV → csvLoader.js → rawData（rows[]）
         ↓
-filterRows()        ← 期間・リース会社フィルター
+rowsInMonth         ← filterRowsInMonthRange（月範囲だけ・全行1周）
         ↓
-dashboardRows       ← ALLOWED_ITEMS で分析名を絞り込み（ダッシュボード用）
+filteredRows        ← リース・得意先（Set。rowsInMonth 上を追加周回のみ）
+        ↓
+dashboardRows       ← ALLOWED_ITEM_NORM_SET＋norm（分析名。ダッシュ用）
+        ↓
+パターンB 時だけ    ← 工場名候補・電話/都道府県サジェスト（viewMode==='B' ガード）
         ↓
 aggregateBy*()      ← 集計関数（aggregator.js）
         ↓
 currentTableData    ← テーブル表示用
 ```
 
+### 粗利収支分析
+
+`allProductMonthly` は **reportMode==='margin'（粗利タブ）のときだけ** `rawData.rows` を畳み込む。ダッシュ表示中に毎回作らない（切替の体感を悪化させないため）。
+
 ```
-rawData.rows → allProductMonthly（月×リース×品番で事前集計）
+rawData.rows → allProductMonthly（月×リース×品番。粗利タブ表示時のみ構築）
         ↓
 ProductMarginView 内で期間・リース・分析名・検索・粗利率で絞り込み
         ↓
@@ -120,10 +133,20 @@ const COL_LEASE  = idx['メンテ']        ?? 41;
 
 ---
 
+## パフォーマンス（必須）
+
+- **同じフィルタ条件**で `rawData.rows` を**二度**全件 `filter` / `filterRows` しない。月は `rowsInMonth` 1本に寄せ、得意先候補もその配列を流用する。
+- パターンB専用（工場名チェック候補・サジェスト）は `viewMode === 'B'` の `useMemo` 内に閉じる。パターンAの操作的に無駄な導出を走らせない。
+- 粗利タブ集計 `allProductMonthly` は `reportMode === 'margin'` のときだけ作る。ダッシュ操作中に全行畳み込まない。
+- 工場名ドロップダウン等、候補が極端に多い **DOM 一覧は件数に上限**を付け、超過分は検索誘導。定数: `B_FACTORY_CHECKBOX_CAP`（500）。
+- 絞り込み・表示切替に伴い重い子ツリーが再描画されやすい箇所は、必要に応じて `startTransition` または `React.memo` を使う（**入力中の onChange には使わない**＝打鍵遅延の原因）。
+
+---
+
 ## 状態管理ルール
 
 - グローバル状態管理ライブラリ（Redux 等）は使わない
-- `useState` + `useMemo` + `useCallback` のみで管理
+- `useState` + `useMemo` + `useCallback` + `useTransition` + `React.memo` で足りる範囲に留める
 - フィルター状態は各ビューコンポーネント内にローカルに持つ
 - 複数選択フィルターは `Set` を使う（`new Set()` = 全選択）
 
@@ -177,9 +200,8 @@ bg-green-900 text-white hover:bg-emerald-600 rounded-3xl font-black
 
 ## キャッシュルール
 
-- キャッシュキー: `maint_report_data_v1`
-- スキーマ変更（フィールド追加など）をした場合は **キャッシュキーのバージョン番号をインクリメント**
-  - 例: `maint_report_data_v1` → `maint_report_data_v2`
+- キャッシュキー: ソース上の定数 `CACHE_KEY`（例: `maint_report_data_v6`）。`App.jsx` と一致させる
+- スキーマ変更（フィールド追加など）をした場合は **App.jsx の `CACHE_KEY` のバージョン番号をインクリメント**し、本節の記述も合わせて更新する
 - キャッシュのライフサイクル管理は `src/utils/db.js` のみで行う
 
 ---

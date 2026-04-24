@@ -87,6 +87,10 @@ npm run build     # 本番ビルド（dist/ に出力）
 npm run preview   # ビルド成果物をプレビュー
 ```
 
+### AI / 実装ルール（Cursor・Claude）
+- エージェント向けの規約はリポジトリ直下の [`CLAUDE.md`](./CLAUDE.md) を参照（データフロー・不要な全件走査の禁止・デザイン等）
+- Cursor Skill 要約: [`.cursor/skills/maint-report-conventions/SKILL.md`](./.cursor/skills/maint-report-conventions/SKILL.md)
+
 ### マスターデータ更新（Windows）
 `マスタデータ更新.bat` を実行すると `public/data/master_data.csv` を上書きコピーする。  
 Mac の場合は手動で CSV を差し替えてから「最新データに更新」ボタンを押す。
@@ -136,7 +140,10 @@ mente_web/
 │   └── utils/
 │       ├── aggregator.js     # 集計・ピボット関数
 │       ├── csvLoader.js      # CSV 読み込み・パース
+│       ├── jpPrefecture.js  # 住所1から都道府県推定
 │       └── db.js             # IndexedDB キャッシュ
+├── CLAUDE.md                 # AI 向け実装ルール
+├── .cursor/skills/           # Cursor Agent Skill（上記要約）
 ├── index.html
 ├── package.json
 ├── tailwind.config.js

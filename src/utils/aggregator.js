@@ -1,30 +1,65 @@
 /**
  * データ集計ユーティリティ（メンテ実績レポート用）
  * profit（粗利）と quantity（受注数）のみ集計
+ *
+ * 月範囲の判定: rowInFiscalMonthRange / filterRowsInMonthRange は、UI 側で
+ * 期間の全行1周だけに使う。filterRows() は従来どおり併用可（挙動は同じ月ロジック）。
  */
 
-export function filterRows(rows, { leaseCompany, startMonth, endMonth }) {
-  return rows.filter(row => {
-    if (leaseCompany && leaseCompany !== 'ALL') {
+/**
+ * 会計期間上の月範囲（跨年度: start>end）に行が入るか。月なし行は従来どおり月フィルタ外。
+ * @param {{ month?: number }} row
+ * @param {string|number|undefined} startMonth
+ * @param {string|number|undefined} endMonth
+ */
+export function rowInFiscalMonthRange(row, startMonth, endMonth) {
+  if (!startMonth || !endMonth) return true;
+  if (!row?.month) return true;
+  const sm = parseInt(String(startMonth), 10);
+  const em = parseInt(String(endMonth), 10);
+  const m = row.month;
+  if (sm <= em) {
+    if (m < sm || m > em) return false;
+  } else {
+    if (m < sm && m > em) return false;
+  }
+  return true;
+}
+
+/**
+ * 月範囲だけを適用（期間1回走査用に App から利用）
+ */
+export function filterRowsInMonthRange(rows, startMonth, endMonth) {
+  if (!startMonth || !endMonth) return rows;
+  return rows.filter((row) => rowInFiscalMonthRange(row, startMonth, endMonth));
+}
+
+/**
+ * @param {object} p
+ * @param {string} [p.leaseCompany] 単一（従来）。'ALL' は未指定扱い
+ * @param {string[]} [p.leaseCompanies] 複数メンテ（OR）。空 or 未指定＝全件
+ * @param {string[]} [p.orderClients] 得意先名(列E)。空 or 未指定＝全件
+ */
+export function filterRows(rows, { leaseCompany, leaseCompanies, orderClients, startMonth, endMonth } = {}) {
+  return rows.filter((row) => {
+    if (leaseCompanies && leaseCompanies.length) {
+      const lc = row.leaseCompany ?? '';
+      if (!leaseCompanies.includes(lc)) return false;
+    } else if (leaseCompany && leaseCompany !== 'ALL') {
       if (row.leaseCompany !== leaseCompany) return false;
     }
-    if (startMonth && endMonth && row.month) {
-      const sm = parseInt(startMonth);
-      const em = parseInt(endMonth);
-      const m = row.month;
-      if (sm <= em) {
-        if (m < sm || m > em) return false;
-      } else {
-        if (m < sm && m > em) return false;
-      }
+    if (orderClients && orderClients.length) {
+      const o = row.orderClient ?? '(未分類)';
+      if (!orderClients.includes(o)) return false;
     }
+    if (!rowInFiscalMonthRange(row, startMonth, endMonth)) return false;
     return true;
   });
 }
 
 // ===== 新階層集計関数 =====
 
-function aggregateByField(rows, years, keyFn) {
+function aggregateByField(rows, years, keyFn, { sortBy = 'profit' } = {}) {
   const map = {};
   rows.forEach(row => {
     const key = keyFn(row) || '(未分類)';
@@ -39,6 +74,9 @@ function aggregateByField(rows, years, keyFn) {
   });
   return Object.values(map).sort((a, b) => {
     const latestYear = years[years.length - 1];
+    if (sortBy === 'quantity') {
+      return (b.quantity[latestYear] || 0) - (a.quantity[latestYear] || 0);
+    }
     return (b.profit[latestYear] || 0) - (a.profit[latestYear] || 0);
   });
 }
@@ -56,22 +94,80 @@ export function aggregateByItemForLease(rows, years, leaseCo) {
   );
 }
 
-/** Pattern B Level 2: 工場別（リース会社内） */
-export function aggregateByBranchForLease(rows, years, leaseCo) {
+/** パターンBの工場キー（送り先から社名。送り先末尾の拠点・担当者名相当を除いたもの） */
+function factoryKeyB(row) {
+  return (row.branchCompany || row.branch || '(未分類)');
+}
+
+/**
+ * パターンB Level1: 工場別
+ */
+export function aggregateByBranchB(rows, years) {
+  return aggregateByField(rows, years, factoryKeyB, { sortBy: 'quantity' });
+}
+
+/**
+ * パターンB（工場→注文者）: 工場内の注文者別
+ */
+export function aggregateByOrdererForFactory(rows, years, factory) {
   return aggregateByField(
-    rows.filter(r => (r.leaseCompany || '(未分類)') === leaseCo),
-    years, r => r.branch
+    rows.filter(r => factoryKeyB(r) === factory),
+    years, r => r.orderer, { sortBy: 'quantity' }
   );
 }
 
-/** Pattern B Level 3: 分類別（リース会社＋工場内） */
-export function aggregateByItemForBranch(rows, years, leaseCo, branch) {
+/**
+ * パターンB（工場→メンテ→分析名(大)）: 工場内のメンテ列（AQ＝leaseCompany）別
+ */
+export function aggregateByMenteUnderFactory(rows, years, factory) {
+  return aggregateByField(
+    rows.filter(r => factoryKeyB(r) === factory),
+    years, r => r.leaseCompany, { sortBy: 'quantity' }
+  );
+}
+
+/**
+ * パターンB 工場＋メンテ内: 分析名(大) 別
+ */
+export function aggregateByItemUnderFactoryMente(rows, years, factory, mente) {
+  return aggregateByField(
+    rows.filter(
+      r =>
+        factoryKeyB(r) === factory &&
+        (r.leaseCompany || '(未分類)') === mente
+    ),
+    years,
+    r => r.item,
+    { sortBy: 'quantity' }
+  );
+}
+
+/**
+ * @deprecated 旧「工場→注文者→…」4階層用。新パターンは aggregateByMenteUnderFactory を使用
+ * パターンB: 工場+注文者内のメンテ列（AQ）別
+ */
+export function aggregateByMenteForFactoryOrderer(rows, years, factory, orderer) {
   return aggregateByField(
     rows.filter(r =>
-      (r.leaseCompany || '(未分類)') === leaseCo &&
-      (r.branch       || '(未分類)') === branch
+      factoryKeyB(r) === factory &&
+      (r.orderer  || '(注文者未登録)') === orderer
     ),
-    years, r => r.item
+    years, r => r.leaseCompany, { sortBy: 'quantity' }
+  );
+}
+
+/**
+ * @deprecated 旧4階層用。新は aggregateByItemUnderFactoryMente
+ * 工場+注文者+メンテ内の分析名(大)別
+ */
+export function aggregateByItemForFactoryMente(rows, years, factory, orderer, mente) {
+  return aggregateByField(
+    rows.filter(r =>
+      factoryKeyB(r) === factory &&
+      (r.orderer        || '(注文者未登録)') === orderer &&
+      (r.leaseCompany   || '(未分類)') === mente
+    ),
+    years, r => r.item, { sortBy: 'quantity' }
   );
 }
 
@@ -136,12 +232,13 @@ export function aggregateByItem(rows, years, branchName) {
  */
 export function generateDetailCsvContent(rows) {
   const q = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
-  const headers = ['メンテ', '部店', 'アイテム', '日付', '受注数', '粗利'];
+  const headers = ['メンテ', '部店', '注文者', 'アイテム', '日付', '受注数', '粗利'];
   const lines = [headers.map(q).join(',')];
   rows.forEach(row => {
     lines.push([
       q(row.leaseCompany ?? ''),
-      q(row.branch ?? ''),
+      q(row.branchCompany || row.branch || ''),
+      q(row.orderer ?? ''),
       q(row.item ?? ''),
       q(row.date ?? ''),
       row.quantity ?? 0,

@@ -1,28 +1,202 @@
-import React, { useState, useMemo, useCallback, useEffect } from 'react';
+import React, { useState, useMemo, useCallback, useEffect, useTransition, memo } from 'react';
 import {
-  ChevronRight, Building2, Tag, Layers,
+  ChevronRight, ChevronDown, ChevronUp, Building2, Tag, Layers,
   ArrowUpRight, ArrowDownRight, LayoutDashboard, Database,
   Calendar, RefreshCcw, CheckCircle2, FileText, FileSpreadsheet,
   AlertCircle, Loader2, XCircle, Eye, EyeOff,
   CheckSquare, Square, Menu, X, Package, Search, ArrowUpDown,
 } from 'lucide-react';
 import { getCache, setCache, clearCache } from './utils/db';
-import { loadCsvData } from './utils/csvLoader';
+import { loadCsvData, generateFullDataCsvContent } from './utils/csvLoader';
+/**
+ * メンテ実績ダッシュ（単一ファイル構成）
+ *
+ * パフォーマンス方針（大規模 rows[] 前提）:
+ * - 会計月の絞り込みは全行1回: filterRowsInMonthRange。リース/得意先は同配列に対し Set。filterRows 二重走査にしない。
+ * - 分析名(大)の許容集合は事前 Set（ALLOWED_ITEM_NORM_SET）。行は norm を1回だけ。
+ * - 工場階層専用の導出（工場名一覧・サジェスト）は viewMode==='B' のときだけ useMemo する。
+ * - 粗利タブ用 allProductMonthly は reportMode==='margin' 時だけ構築する。
+ * - 操作に伴う大きい再描画を startTransition で遅延優先に。DashboardView は React.memo。
+ */
 import {
   filterRows,
+  filterRowsInMonthRange,
   aggregateByLease,
   aggregateByItemForLease,
-  aggregateByBranchForLease,
-  aggregateByItemForBranch,
+  aggregateByBranchB,
+  aggregateByOrdererForFactory,
+  aggregateByMenteUnderFactory,
+  aggregateByItemUnderFactoryMente,
   aggregateByProductCode,
   generateDetailCsvContent, calcYoY, formatCurrencyFull,
 } from './utils/aggregator';
 
-const CACHE_KEY = 'maint_report_data_v1';
+const CACHE_KEY = 'maint_report_data_v6';
 
 const ALLOWED_ITEMS = ['オルタネーター', 'スターター', 'コンプレッサー', 'エアコン関連'];
 // NFKC正規化：半角カナ→全角カナ、全角英数→半角英数 に統一して比較
 const norm = s => (s || '').normalize('NFKC').trim();
+
+/** 分析名フィルタ用（行ごとの norm 呼び出しを減らす） */
+const ALLOWED_ITEM_NORM_SET = (() => {
+  const s = new Set();
+  for (const x of ALLOWED_ITEMS) s.add(norm(x));
+  return s;
+})();
+
+/** 工場名ドロップダウン1画面あたりの行数（数千DOMで描画が固まるのを防ぐ） */
+const B_FACTORY_CHECKBOX_CAP = 500;
+
+/**
+ * 工場名ドロップダウン: 1画面に出す行（残りは検索で拾う誘導）
+ */
+const BFactoryMultiSelect = ({
+  bFactoryListAll, bFactoryListDisplay, bFactoryListOverflow,
+  bFactoryQuery, onQueryChange,
+  bFactorySelected, onToggle, onSelectAllInView, onClear,
+}) => {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="relative w-full min-w-0">
+      <div className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] ml-0.5 mb-1">
+        工場名
+      </div>
+      <input
+        type="text"
+        value={bFactoryQuery}
+        onChange={e => { onQueryChange(e.target.value); setOpen(true); }}
+        onFocus={() => setOpen(true)}
+        onBlur={() => { setTimeout(() => setOpen(false), 200); }}
+        autoComplete="off"
+        placeholder="名前一覧を絞り、複数にチェック"
+        className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs font-bold text-slate-700 focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400"
+      />
+      {bFactorySelected.length > 0 && (
+        <div className="text-[10px] font-bold text-emerald-600 mt-0.5">{bFactorySelected.length}件選択中</div>
+      )}
+      {open && bFactoryListDisplay.length > 0 && (
+        <ul className="absolute z-50 left-0 right-0 top-full mt-1 max-h-48 overflow-y-auto bg-white border border-slate-200 rounded-xl shadow-lg p-1">
+          {bFactoryListDisplay.map(s => {
+            const checked = bFactorySelected.includes(s);
+            return (
+              <li key={s} className="hover:bg-emerald-50/60 rounded-lg">
+                <label className="flex items-start gap-2 cursor-pointer px-2 py-1.5 text-xs font-bold text-slate-800">
+                  <input
+                    type="checkbox"
+                    className="mt-0.5 flex-shrink-0"
+                    checked={checked}
+                    onChange={() => onToggle(s)}
+                    onClick={e => e.stopPropagation()}
+                  />
+                  <span className="text-left break-all">{s}</span>
+                </label>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      <div className="flex flex-wrap gap-2 mt-1 no-print">
+        <button
+          type="button"
+          onClick={() => onSelectAllInView(bFactoryListDisplay)}
+          className="text-[10px] font-black text-slate-500 hover:text-emerald-600"
+        >
+          表示中を全て選択
+        </button>
+        <button
+          type="button"
+          onClick={onClear}
+          className="text-[10px] font-black text-slate-500 hover:text-rose-600"
+        >
+          選択をクリア
+        </button>
+        <span className="text-[9px] text-slate-400">候補 {bFactoryListAll.length} 件{bFactoryListOverflow > 0 ? `（先頭${B_FACTORY_CHECKBOX_CAP}件表示）` : ''}</span>
+      </div>
+    </div>
+  );
+};
+
+/**
+ * パターンB: 工場名(複数)・電話・都道府県
+ */
+function applyBFactorySearchFilters(rows, { factoryNames, phone, pref }) {
+  if (!rows?.length) return rows;
+  let out = rows;
+  if (factoryNames && factoryNames.length) {
+    const s = new Set(factoryNames);
+    out = out.filter(r => s.has(r.branchCompany || r.branch));
+  }
+  const dP = (phone || '').replace(/\D/g, '');
+  if (dP) {
+    out = out.filter(r => (r.phoneSearchStr || '').includes(dP));
+  }
+  const nPr = (pref || '').trim();
+  if (nPr) {
+    const n3 = norm(nPr);
+    out = out.filter(r => norm(r.prefecture || '').includes(n3));
+  }
+  return out;
+}
+
+/**
+ * 候補付きテキスト（絞り込み用）
+ */
+const SuggestTextInput = ({ label, value, onChange, suggestions, placeholder, id, compact }) => {
+  const [open, setOpen] = useState(false);
+  return (
+    <div
+      className="relative w-full min-w-0"
+      onBlur={() => { setTimeout(() => setOpen(false), 150); }}
+    >
+      <label htmlFor={id} className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] ml-0.5 block mb-1">
+        {label}
+      </label>
+      <div className="relative">
+        <input
+          id={id}
+          type="text"
+          value={value}
+          onChange={e => { onChange(e.target.value); setOpen(true); }}
+          onFocus={() => setOpen(true)}
+          autoComplete="off"
+          placeholder={placeholder}
+          className={compact
+            ? 'w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs font-bold text-slate-700 focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400'
+            : 'w-full bg-slate-100 border-0 rounded-2xl px-4 py-2.5 text-sm font-bold text-slate-700 focus:ring-2 focus:ring-emerald-500/20 focus:bg-white'}
+        />
+        {open && suggestions && suggestions.length > 0 && (
+          <ul className="absolute z-50 left-0 right-0 top-full mt-1 max-h-48 overflow-y-auto bg-white border border-slate-200 rounded-xl shadow-lg text-left text-xs font-bold text-slate-700">
+            {suggestions.map((s, i) => {
+              const main = typeof s === 'string' ? s : s.label;
+              const sub = typeof s === 'string' ? null : s.sublabel;
+              const fac = typeof s === 'string' ? null : s.factory;
+              return (
+                <li key={i}>
+                  <button
+                    type="button"
+                    className="w-full text-left px-3 py-2 hover:bg-emerald-50 flex items-start justify-between gap-2"
+                    onMouseDown={e => e.preventDefault()}
+                    onClick={() => { onChange(typeof s === 'string' ? s : s.value); setOpen(false); }}
+                  >
+                    <div className="min-w-0 flex-1">
+                      <div>{main}</div>
+                      {sub && <span className="block text-[10px] font-bold text-slate-400 tracking-tight mt-0.5">{sub}</span>}
+                    </div>
+                    {fac ? (
+                      <div className="text-[10px] font-bold text-emerald-700 line-clamp-2 max-w-[45%] flex-shrink-0 text-right leading-tight">
+                        {fac}
+                      </div>
+                    ) : null}
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </div>
+    </div>
+  );
+};
 
 const App = () => {
   const [isAuthenticated, setIsAuthenticated] = useState(() =>
@@ -37,17 +211,33 @@ const App = () => {
   const [loadError, setLoadError] = useState(null);
   const [connectionStatus, setConnectionStatus] = useState('idle');
 
-  const [selectedLeaseCo, setSelectedLeaseCo] = useState('ALL');
+  /** メンテ(リース)複数。空＝全件 */
+  const [selectedLeases, setSelectedLeases] = useState([]);
+  /** 得意先名(列E)複数。空＝全件 */
+  const [selectedOrderClients, setSelectedOrderClients] = useState([]);
+  const [orderClientQuery, setOrderClientQuery] = useState('');
+  /** 得意先名: クリックで開くパネル（常時表示にしない） */
+  const [orderClientPanelOpen, setOrderClientPanelOpen] = useState(false);
   const [monthRange, setMonthRange] = useState({ start: '4', end: '3' });
   const [amountUnit, setAmountUnit] = useState('yen');
   const [showProfit, setShowProfit] = useState(true);
   const [checkedItems, setCheckedItems] = useState(new Set());
   // activeView: 現在のドリルダウン位置
-  const [activeView, setActiveView] = useState({ leaseCo: null, branch: null, item: null });
-  // viewMode: 'A' = リース→分類→品番 / 'B' = リース→工場→分類→品番
+  const [activeView, setActiveView] = useState({ leaseCo: null, branch: null, item: null, orderClient: null, orderer: null });
+  // viewMode: 'A' = リース→分類→品番 / 'B' = 工場階層（受注数のみ）
   const [viewMode, setViewMode] = useState('A');
+  /**
+   * パターンBの2系統: orderer = 工場→注文者（終了）/ menteItem = 工場→メンテ(AQ)→分析名(大)
+   */
+  const [viewBVariant, setViewBVariant] = useState('orderer');
+  /** パターンB: 工場名(複数)・電話・都道府県 */
+  const [bFactoryQuery, setBFactoryQuery] = useState('');
+  const [bFactorySelected, setBFactorySelected] = useState([]);
+  const [bSearchPhone, setBSearchPhone] = useState('');
+  const [bSearchPref, setBSearchPref] = useState('');
   const [reportMode, setReportMode] = useState('dashboard'); // 'dashboard' | 'margin'
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [, startTransition] = useTransition();
 
   const fmtAmt = useCallback((val) => {
     if (amountUnit === 'thousand') {
@@ -76,7 +266,11 @@ const App = () => {
       }
 
       const csvData = await loadCsvData();
-      await setCache(CACHE_KEY, { data: csvData, timestamp: Date.now() });
+      const { rows, ...rest } = csvData;
+      await setCache(CACHE_KEY, {
+        data: { ...rest, rows: rows.map(({ rawRow, ...r }) => r) },
+        timestamp: Date.now(),
+      });
       setRawData({ ...csvData, fromCache: false, cacheAgeMsg: '最新' });
       setConnectionStatus('online');
     } catch (err) {
@@ -102,20 +296,112 @@ const App = () => {
     }
   }, [rawData]);
 
-  const filteredRows = useMemo(() => {
-    if (!rawData) return [];
-    return filterRows(rawData.rows, {
-      leaseCompany: selectedLeaseCo,
-      startMonth: monthRange.start,
-      endMonth: monthRange.end,
-    });
-  }, [rawData, selectedLeaseCo, monthRange]);
+  // 会計月範囲は全行1周のみ。以降の絞り込みは同配列＋Set（二重の filterRows 全件走査を避ける）
+  const rowsInMonth = useMemo(
+    () => (rawData?.rows?.length ? filterRowsInMonthRange(rawData.rows, monthRange.start, monthRange.end) : []),
+    [rawData, monthRange.start, monthRange.end]
+  );
 
-  // ダッシュボード用：ALLOWED_ITEMSの分析名のみに絞り込み（半角全角を区別しない）
-  const dashboardRows = useMemo(() => {
-    const allowedNorm = ALLOWED_ITEMS.map(norm);
-    return filteredRows.filter(r => allowedNorm.includes(norm(r.item)));
-  }, [filteredRows]);
+  const filteredRows = useMemo(() => {
+    const leaseSet = selectedLeases.length ? new Set(selectedLeases) : null;
+    const orderSet = selectedOrderClients.length ? new Set(selectedOrderClients) : null;
+    if (!leaseSet && !orderSet) return rowsInMonth;
+    return rowsInMonth.filter((row) => {
+      if (leaseSet && !leaseSet.has(row.leaseCompany ?? '')) return false;
+      if (orderSet) {
+        const o = row.orderClient ?? '(未分類)';
+        if (!orderSet.has(o)) return false;
+      }
+      return true;
+    });
+  }, [rowsInMonth, selectedLeases, selectedOrderClients]);
+
+  // ダッシュ用：分析名(大)白／ALLOWED_ITEMS 相当のみ（norm は行ごと1回）
+  const dashboardRows = useMemo(
+    () => filteredRows.filter((r) => {
+      const it = r.item;
+      return it && ALLOWED_ITEM_NORM_SET.has(norm(it));
+    }),
+    [filteredRows]
+  );
+
+  useEffect(() => {
+    if (viewMode !== 'B') {
+      setBFactoryQuery('');
+      setBFactorySelected([]);
+      setBSearchPhone('');
+      setBSearchPref('');
+    }
+  }, [viewMode]);
+
+  const dashboardRowsB = useMemo(
+    () => (viewMode === 'B' ? applyBFactorySearchFilters(dashboardRows, {
+      factoryNames: bFactorySelected, phone: bSearchPhone, pref: bSearchPref,
+    }) : dashboardRows),
+    [viewMode, dashboardRows, bFactorySelected, bSearchPhone, bSearchPref]
+  );
+
+  const bSourceRows = viewMode === 'B' ? dashboardRowsB : dashboardRows;
+
+  const bFactoryListAll = useMemo(() => {
+    if (viewMode !== 'B' || !dashboardRows.length) return [];
+    const set = new Set();
+    for (const r of dashboardRows) {
+      const c = r.branchCompany || r.branch;
+      if (c && c !== '(未分類)') set.add(c);
+    }
+    return Array.from(set).sort((a, b) => a.localeCompare(b, 'ja'));
+  }, [viewMode, dashboardRows]);
+
+  const bFactoryListFiltered = useMemo(() => {
+    const q = norm(bFactoryQuery);
+    if (!q) return bFactoryListAll;
+    return bFactoryListAll.filter(s => norm(s).includes(q));
+  }, [bFactoryListAll, bFactoryQuery]);
+
+  const bFactoryListDisplay = useMemo(
+    () => bFactoryListFiltered.slice(0, B_FACTORY_CHECKBOX_CAP),
+    [bFactoryListFiltered]
+  );
+  const bFactoryListOverflow = Math.max(0, bFactoryListFiltered.length - bFactoryListDisplay.length);
+
+  const bSuggestPhone = useMemo(() => {
+    if (viewMode !== 'B') return [];
+    const byKey = new Map();
+    for (const r of dashboardRows) {
+      const k = r.phoneSearchStr;
+      if (!k || byKey.has(k)) continue;
+      const raw = (r.deliveryPhone || '').trim() || k;
+      const factory = (r.branchCompany || r.branch || '').trim() || '—';
+      byKey.set(k, {
+        value: r.deliveryPhone || k,
+        label: raw,
+        sublabel: k.length >= 2 ? k : '',
+        factory,
+      });
+    }
+    const list = Array.from(byKey.values());
+    const d = bSearchPhone.replace(/\D/g, '');
+    if (!d) return list.slice(0, 50);
+    return list
+      .filter(
+        s => s.label.replace(/\D/g, '').includes(d)
+          || (s.sublabel && s.sublabel.includes(d))
+      )
+      .slice(0, 50);
+  }, [viewMode, dashboardRows, bSearchPhone]);
+
+  const bSuggestPref = useMemo(() => {
+    if (viewMode !== 'B') return [];
+    const set = new Set();
+    for (const r of dashboardRows) {
+      if (r.prefecture) set.add(r.prefecture);
+    }
+    const all = Array.from(set).sort((a, b) => a.localeCompare(b, 'ja'));
+    const q = norm(bSearchPref);
+    if (!q) return all.slice(0, 50);
+    return all.filter(s => norm(s).includes(q)).slice(0, 50);
+  }, [viewMode, dashboardRows, bSearchPref]);
 
   const years = useMemo(() => rawData?.years || [], [rawData]);
 
@@ -124,9 +410,32 @@ const App = () => {
     [rawData]
   );
 
-  // 粗利収支分析用：rawData変更時のみ月×リース会社×品番で事前集計
+  const orderClientOptions = useMemo(() => {
+    if (!rowsInMonth.length) return [];
+    const leaseSet = selectedLeases.length ? new Set(selectedLeases) : null;
+    const src = leaseSet
+      ? rowsInMonth.filter(r => leaseSet.has(r.leaseCompany ?? ''))
+      : rowsInMonth;
+    const s = new Set();
+    for (const r of src) {
+      if (r.orderClient && r.orderClient !== '(未分類)') s.add(r.orderClient);
+    }
+    return Array.from(s).sort((a, b) => a.localeCompare(b, 'ja'));
+  }, [rowsInMonth, selectedLeases]);
+
+  const orderClientOptionsForSelect = useMemo(() => {
+    if (!orderClientOptions.length) return [];
+    const q = norm(orderClientQuery);
+    if (!q) return orderClientOptions;
+    const matched = orderClientOptions.filter(o => norm(o).includes(q));
+    const mset = new Set(matched);
+    const mustShow = selectedOrderClients.filter(n => !mset.has(n));
+    return [...mustShow, ...matched].filter((n, i, a) => a.indexOf(n) === i);
+  }, [orderClientOptions, orderClientQuery, selectedOrderClients]);
+
+  // 粗利タブ表示時だけ全行畳み込み（ダッシュ切替のたびに走らせない）
   const allProductMonthly = useMemo(() => {
-    if (!rawData?.rows) return [];
+    if (reportMode !== 'margin' || !rawData?.rows) return [];
     const map = {};
     rawData.rows.forEach(r => {
       if (!r.productCode || !r.leaseCompany) return;
@@ -149,35 +458,47 @@ const App = () => {
       map[key].profit   += Number(r.profit)   || 0;
     });
     return Object.values(map);
-  }, [rawData]);
+  }, [rawData, reportMode]);
 
   const currentTableData = useMemo(() => {
-    if (!dashboardRows.length || !years.length) return [];
+    if (!bSourceRows.length || !years.length) return [];
     const { leaseCo, branch, item } = activeView;
 
-    // 最下層: 品番
-    if (item !== null) {
-      return aggregateByProductCode(dashboardRows, years, { leaseCo, branch, item });
+    if (viewMode === 'A') {
+      if (item !== null) {
+        return aggregateByProductCode(bSourceRows, years, { leaseCo, branch, item });
+      }
+      if (leaseCo !== null) return aggregateByItemForLease(bSourceRows, years, leaseCo);
+      return aggregateByLease(bSourceRows, years);
     }
 
-    if (viewMode === 'A') {
-      if (leaseCo !== null) return aggregateByItemForLease(dashboardRows, years, leaseCo);
-      return aggregateByLease(dashboardRows, years);
-    } else {
-      if (leaseCo !== null && branch !== null) return aggregateByItemForBranch(dashboardRows, years, leaseCo, branch);
-      if (leaseCo !== null) return aggregateByBranchForLease(dashboardRows, years, leaseCo);
-      return aggregateByLease(dashboardRows, years);
+    if (viewBVariant === 'orderer') {
+      if (branch !== null) {
+        return aggregateByOrdererForFactory(bSourceRows, years, branch);
+      }
+      return aggregateByBranchB(bSourceRows, years);
     }
-  }, [dashboardRows, years, activeView, viewMode]);
+    if (branch !== null && leaseCo !== null) {
+      return aggregateByItemUnderFactoryMente(bSourceRows, years, branch, leaseCo);
+    }
+    if (branch !== null) {
+      return aggregateByMenteUnderFactory(bSourceRows, years, branch);
+    }
+    return aggregateByBranchB(bSourceRows, years);
+  }, [bSourceRows, years, activeView, viewMode, viewBVariant]);
 
   // viewが変わるたびにチェック状態をリセット
-  const viewKey = `${activeView.leaseCo}|${activeView.branch}|${activeView.item}`;
+  const viewKey = `${viewMode}|${viewBVariant}|${bFactoryQuery}|${[...bFactorySelected].sort().join('¦')}|${bSearchPhone}|${bSearchPref}|${[...selectedLeases].sort().join('¦')}|${[...selectedOrderClients].sort().join('¦')}|${activeView.leaseCo}|${activeView.branch}|${activeView.item}|${activeView.orderer ?? ''}`;
   useEffect(() => {
     if (!currentTableData.length) return;
     setCheckedItems(new Set(currentTableData.map(d => d.name)));
   }, [viewKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const isLeafLevel = activeView.item !== null;
+  const isLeafLevel = viewMode === 'A'
+    ? activeView.item !== null
+    : (viewBVariant === 'orderer'
+      ? activeView.branch != null
+      : (activeView.branch != null && activeView.leaseCo != null));
 
   const totalRow = useMemo(() => {
     if (!currentTableData.length || !years.length) return null;
@@ -191,49 +512,114 @@ const App = () => {
     }));
     const { leaseCo, branch, item } = activeView;
     let label = '全体 合計';
-    if (item !== null)   label = `${item} 合計`;
-    else if (branch !== null) label = `${branch} 合計`;
-    else if (leaseCo !== null) label = `${leaseCo} 合計`;
+    if (viewMode === 'A') {
+      if (item !== null) label = `${item} 合計`;
+      else if (leaseCo !== null) label = `${leaseCo} 合計`;
+    } else {
+      if (viewBVariant === 'orderer') {
+        if (branch !== null) label = `${branch} 合計`;
+      } else {
+        if (leaseCo !== null && branch !== null) label = `${leaseCo} 合計`;
+        else if (branch !== null) label = `${branch} 合計`;
+      }
+    }
     return { name: label, profit, quantity };
-  }, [currentTableData, years, activeView, checkedItems]);
+  }, [currentTableData, years, activeView, checkedItems, viewMode, viewBVariant]);
 
-  const handleDrillDown = (row) => {
+  const handleDrillDown = useCallback((row) => {
     if (isLeafLevel) return;
     const { leaseCo, branch } = activeView;
     if (viewMode === 'A') {
       if (leaseCo === null) {
-        setActiveView({ leaseCo: row.name, branch: null, item: null });
+        setActiveView({ leaseCo: row.name, branch: null, item: null, orderClient: null, orderer: null });
       } else {
         setActiveView(prev => ({ ...prev, item: row.name }));
       }
     } else {
-      if (leaseCo === null) {
-        setActiveView({ leaseCo: row.name, branch: null, item: null });
-      } else if (branch === null) {
-        setActiveView(prev => ({ ...prev, branch: row.name }));
-      } else {
-        setActiveView(prev => ({ ...prev, item: row.name }));
+      if (viewBVariant === 'orderer') {
+        if (branch === null) {
+          setActiveView({ leaseCo: null, branch: row.name, item: null, orderClient: null, orderer: null });
+        }
+        return;
+      }
+      if (branch === null) {
+        setActiveView({ leaseCo: null, branch: row.name, item: null, orderClient: null, orderer: null });
+      } else if (leaseCo === null) {
+        setActiveView(prev => ({ ...prev, leaseCo: row.name, item: null, orderer: null }));
       }
     }
-  };
+  }, [isLeafLevel, activeView, viewMode, viewBVariant]);
 
   const handleNavigateTo = useCallback((view) => setActiveView(view), []);
   const handleRefresh = () => loadData(true);
 
-  const handleSaveCsv = () => {
+  const handleSaveCsv = async () => {
     const { leaseCo, branch, item } = activeView;
-    let rows = dashboardRows;
-    if (leaseCo) rows = rows.filter(r => (r.leaseCompany || '(未分類)') === leaseCo);
-    if (branch)  rows = rows.filter(r => (r.branch       || '(未分類)') === branch);
-    if (item)    rows = rows.filter(r => (r.item         || '(未分類)') === item);
+
+    let dataSource = rawData;
+    if (!rawData?.rows?.[0] || !Array.isArray(rawData.rows[0].rawRow)) {
+      setLoadingProgress({ fetchMsg: 'エクスポート用に全列を読み込み中...', isSyncing: true });
+      try {
+        dataSource = await loadCsvData();
+      } catch (e) {
+        console.error('全列CSV再取得失敗', e);
+        return;
+      } finally {
+        setLoadingProgress({ fetchMsg: '', isSyncing: false });
+      }
+    }
+
+    let rows = dataSource?.rows;
+    if (!rows?.length) return;
+
+    rows = filterRows(rows, {
+      leaseCompanies: selectedLeases.length > 0 ? selectedLeases : undefined,
+      orderClients: selectedOrderClients.length > 0 ? selectedOrderClients : undefined,
+      startMonth: monthRange.start,
+      endMonth: monthRange.end,
+    });
+    const allowedNorm = ALLOWED_ITEMS.map(norm);
+    rows = rows.filter(r => allowedNorm.includes(norm(r.item)));
+    if (viewMode === 'B') {
+      rows = applyBFactorySearchFilters(rows, {
+        factoryNames: bFactorySelected, phone: bSearchPhone, pref: bSearchPref,
+      });
+    }
+
+    if (viewMode === 'A') {
+      if (leaseCo) rows = rows.filter(r => (r.leaseCompany || '(未分類)') === leaseCo);
+      if (branch)  rows = rows.filter(r => (r.branch       || '(未分類)') === branch);
+      if (item)    rows = rows.filter(r => (r.item         || '(未分類)') === item);
+    } else {
+      if (branch) {
+        rows = rows.filter(
+          r => (r.branchCompany || r.branch || '(未分類)') === branch
+        );
+      }
+      if (viewBVariant === 'menteItem' && leaseCo) {
+        rows = rows.filter(r => (r.leaseCompany  || '(未分類)') === leaseCo);
+      }
+    }
+
     if (!rows.length) return;
-    const csv = generateDetailCsvContent(rows);
+
+    const headers = dataSource?.csvHeaders || rawData?.csvHeaders;
+    const canFullExport = headers?.length
+      && rows.length > 0
+      && rows.every(r => Array.isArray(r.rawRow) && r.rawRow.length > 0);
+    const csv = canFullExport
+      ? generateFullDataCsvContent(headers, rows)
+      : generateDetailCsvContent(rows);
+
     const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    const suffix = [leaseCo, branch, item].filter(Boolean).join('_') || 'ALL';
-    a.download = `メンテ実績_${suffix}_${new Date().toISOString().slice(0, 10)}.csv`;
+    const suffix = (viewMode === 'A'
+      ? [leaseCo, branch, item]
+      : (viewBVariant === 'orderer' ? [branch] : [branch, leaseCo])
+    ).filter(Boolean).join('_') || 'ALL';
+    a.download = `メンテ実績_全列_${suffix}_${new Date().toISOString().slice(0, 10)}.csv`;
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -320,7 +706,9 @@ const App = () => {
 
         <nav className="flex-1 space-y-2">
           <button
-            onClick={() => { setReportMode('dashboard'); setIsSidebarOpen(false); }}
+            onClick={() => {
+              startTransition(() => { setReportMode('dashboard'); setIsSidebarOpen(false); });
+            }}
             className={`flex items-center gap-3 w-full p-4 rounded-2xl transition-all duration-300 ${
               reportMode === 'dashboard'
                 ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-600/30 scale-105'
@@ -330,7 +718,9 @@ const App = () => {
             <span className="font-black text-sm tracking-tight">分析ダッシュボード</span>
           </button>
           <button
-            onClick={() => { setReportMode('margin'); setIsSidebarOpen(false); }}
+            onClick={() => {
+              startTransition(() => { setReportMode('margin'); setIsSidebarOpen(false); });
+            }}
             className={`flex items-center gap-3 w-full p-4 rounded-2xl transition-all duration-300 ${
               reportMode === 'margin'
                 ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-600/30 scale-105'
@@ -413,50 +803,240 @@ const App = () => {
               <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] ml-2">
                 表示パターン
               </label>
-              <div className="flex bg-slate-100 p-1 rounded-2xl w-fit">
-                <button
-                  onClick={() => { setViewMode('A'); setActiveView({ leaseCo: null, branch: null, item: null }); }}
-                  className={`px-5 py-2.5 rounded-xl text-xs font-black transition-all duration-300 whitespace-nowrap ${viewMode === 'A' ? 'bg-white text-slate-800 shadow-md' : 'text-slate-400 hover:text-slate-600'}`}>
-                  リース → 分類 → 品番
-                </button>
-                <button
-                  onClick={() => { setViewMode('B'); setActiveView({ leaseCo: null, branch: null, item: null }); }}
-                  className={`px-5 py-2.5 rounded-xl text-xs font-black transition-all duration-300 whitespace-nowrap ${viewMode === 'B' ? 'bg-white text-slate-800 shadow-md' : 'text-slate-400 hover:text-slate-600'}`}>
-                  リース → 工場 → 分類 → 品番
-                </button>
+              <div className="flex flex-col gap-3 w-full max-w-3xl">
+                <div className="flex bg-slate-100 p-1 rounded-2xl w-fit">
+                  <button
+                    onClick={() => {
+                      startTransition(() => {
+                        setViewMode('A');
+                        setActiveView({ leaseCo: null, branch: null, item: null, orderClient: null, orderer: null });
+                      });
+                    }}
+                    className={`px-5 py-2.5 rounded-xl text-xs font-black transition-all duration-300 whitespace-nowrap ${viewMode === 'A' ? 'bg-white text-slate-800 shadow-md' : 'text-slate-400 hover:text-slate-600'}`}>
+                    リース → 分類 → 品番
+                  </button>
+                  <button
+                    onClick={() => {
+                      startTransition(() => {
+                        setViewMode('B');
+                        setViewBVariant('orderer');
+                        setActiveView({ leaseCo: null, branch: null, item: null, orderClient: null, orderer: null });
+                      });
+                    }}
+                    className={`px-5 py-2.5 rounded-xl text-xs font-black transition-all duration-300 whitespace-nowrap ${viewMode === 'B' ? 'bg-white text-slate-800 shadow-md' : 'text-slate-400 hover:text-slate-600'}`}>
+                    工場
+                  </button>
+                </div>
+                {viewMode === 'B' && (
+                  <div className="flex flex-wrap bg-emerald-50/90 p-1 rounded-2xl w-fit gap-1 border border-emerald-100/80">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        startTransition(() => {
+                          setViewBVariant('orderer');
+                          setActiveView({ leaseCo: null, branch: null, item: null, orderClient: null, orderer: null });
+                        });
+                      }}
+                      className={`px-4 py-2 rounded-xl text-xs font-black transition-all ${viewBVariant === 'orderer' ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+                    >
+                      工場 → 注文者
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        startTransition(() => {
+                          setViewBVariant('menteItem');
+                          setActiveView({ leaseCo: null, branch: null, item: null, orderClient: null, orderer: null });
+                        });
+                      }}
+                      className={`px-4 py-2 rounded-xl text-xs font-black transition-all ${viewBVariant === 'menteItem' ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+                    >
+                      工場 → メンテ → 分析名(大)
+                    </button>
+                  </div>
+                )}
+                {viewMode === 'B' && (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 w-full max-w-5xl pt-1">
+                    <BFactoryMultiSelect
+                      bFactoryListAll={bFactoryListAll}
+                      bFactoryListDisplay={bFactoryListDisplay}
+                      bFactoryListOverflow={bFactoryListOverflow}
+                      bFactoryQuery={bFactoryQuery}
+                      onQueryChange={setBFactoryQuery}
+                      bFactorySelected={bFactorySelected}
+                      onToggle={(name) => {
+                        startTransition(() => {
+                          setBFactorySelected(prev => (
+                            prev.includes(name) ? prev.filter(x => x !== name) : [...prev, name]
+                          ));
+                        });
+                      }}
+                      onSelectAllInView={(vis) => {
+                        startTransition(() => {
+                          setBFactorySelected(prev => Array.from(new Set([...prev, ...vis])));
+                        });
+                      }}
+                      onClear={() => { startTransition(() => { setBFactorySelected([]); }); }}
+                    />
+                    <SuggestTextInput
+                      id="b-search-phone"
+                      label="電話番号"
+                      value={bSearchPhone}
+                      onChange={setBSearchPhone}
+                      placeholder="数字（0なし表記も可）"
+                      suggestions={bSuggestPhone}
+                      compact
+                    />
+                    <SuggestTextInput
+                      id="b-search-pref"
+                      label="都道府県"
+                      value={bSearchPref}
+                      onChange={setBSearchPref}
+                      placeholder="都道府県"
+                      suggestions={bSuggestPref}
+                      compact
+                    />
+                  </div>
+                )}
               </div>
             </div>
 
-            {/* リース会社フィルター */}
+            {/* リース会社＋得意先(列E) */}
             <div className="space-y-3 w-full">
               <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] ml-2">
                 メンテ（リース会社）絞り込み
               </label>
-              <div className="flex gap-2 flex-wrap">
-                {['ALL', ...leaseCompanies].map(l => (
-                  <button key={l}
-                    onClick={() => { setSelectedLeaseCo(l); setActiveView({ leaseCo: null, branch: null, item: null }); }}
+              <div className="flex gap-2 flex-wrap items-center">
+                <button
+                  type="button"
+                  onClick={() => {
+                    startTransition(() => {
+                      setSelectedLeases([]);
+                      setSelectedOrderClients([]);
+                      setOrderClientQuery('');
+                      setActiveView({ leaseCo: null, branch: null, item: null, orderClient: null, orderer: null });
+                    });
+                  }}
+                  className={`px-4 py-2 rounded-2xl text-xs font-black transition-all duration-300 ${
+                    selectedLeases.length === 0
+                      ? 'bg-emerald-600 text-white shadow-xl shadow-emerald-200'
+                      : 'bg-slate-100 text-slate-400 hover:bg-slate-200'
+                  }`}>
+                  すべて
+                </button>
+                {leaseCompanies.map(l => (
+                  <button
+                    key={l}
+                    type="button"
+                    onClick={() => {
+                      startTransition(() => {
+                        setSelectedLeases(prev => {
+                          const s = new Set(prev);
+                          if (s.has(l)) s.delete(l);
+                          else s.add(l);
+                          return Array.from(s);
+                        });
+                        setSelectedOrderClients([]);
+                        setOrderClientQuery('');
+                        setActiveView({ leaseCo: null, branch: null, item: null, orderClient: null, orderer: null });
+                      });
+                    }}
                     className={`px-4 py-2 rounded-2xl text-xs font-black transition-all duration-300 ${
-                      selectedLeaseCo === l
+                      selectedLeases.includes(l)
                         ? 'bg-emerald-600 text-white shadow-xl shadow-emerald-200'
                         : 'bg-slate-100 text-slate-400 hover:bg-slate-200'
                     }`}>
-                    {l === 'ALL' ? 'すべて' : l}
+                    {l}
                   </button>
                 ))}
+                {selectedLeases.length > 0 && (
+                  <span className="text-[10px] font-bold text-slate-500">{selectedLeases.length}社選択中</span>
+                )}
               </div>
+              {orderClientOptions.length > 0 && (
+                <div className="mt-2 pt-2 border-t border-slate-100 w-full max-w-4xl">
+                  <div className="text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] ml-0.5 mb-1.5">
+                    得意先名（E列 {selectedLeases.length ? '・選択リース内の候補' : '（期間内全件）'}）
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setOrderClientPanelOpen(o => !o)}
+                    className={`w-full max-w-2xl flex items-center justify-between gap-2 rounded-xl border ${orderClientPanelOpen ? 'border-emerald-400 ring-2 ring-emerald-500/20' : 'border-slate-200'} bg-white px-3 py-2.5 text-left text-xs font-bold text-slate-800 hover:border-slate-300 transition-colors shadow-sm`}
+                  >
+                    <span className="min-w-0 truncate">
+                      得意先名を絞り込み・選択
+                      {selectedOrderClients.length > 0 && (
+                        <span className="ml-2 text-emerald-600">{selectedOrderClients.length}件選択中</span>
+                      )}
+                    </span>
+                    {orderClientPanelOpen
+                      ? <ChevronUp size={18} className="text-slate-500 flex-shrink-0" />
+                      : <ChevronDown size={18} className="text-slate-500 flex-shrink-0" />}
+                  </button>
+                  {orderClientPanelOpen && (
+                    <div
+                      className="mt-2 w-full max-w-2xl rounded-2xl border border-slate-200 bg-slate-50/50 p-3 shadow-inner animate-fade-in"
+                    >
+                      <div className="flex flex-wrap items-center justify-end gap-2 mb-1.5">
+                        {selectedOrderClients.length > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              startTransition(() => { setSelectedOrderClients([]); setOrderClientQuery(''); });
+                            }}
+                            className="text-[10px] font-bold text-rose-500 hover:underline"
+                          >
+                            選択をクリア
+                          </button>
+                        )}
+                      </div>
+                      <input
+                        type="search"
+                        value={orderClientQuery}
+                        onChange={e => setOrderClientQuery(e.target.value)}
+                        placeholder="候補を絞り込み"
+                        className="w-full mb-1.5 rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-[11px] font-bold text-slate-700"
+                      />
+                      <select
+                        multiple
+                        size={Math.min(10, Math.max(4, orderClientOptionsForSelect.length || 1))}
+                        className="w-full min-h-[8rem] rounded-xl border border-slate-200 bg-white px-2 py-1 text-[11px] font-bold text-slate-800 leading-snug"
+                        value={selectedOrderClients}
+                        onChange={(e) => {
+                          const v = Array.from(e.target.selectedOptions, o => o.value);
+                          startTransition(() => {
+                            setSelectedOrderClients(v);
+                            setActiveView({ leaseCo: null, branch: null, item: null, orderClient: null, orderer: null });
+                          });
+                        }}
+                      >
+                        {orderClientOptionsForSelect.map(name => (
+                          <option key={name} value={name} title={name}>
+                            {name}
+                          </option>
+                        ))}
+                      </select>
+                      <p className="text-[9px] text-slate-500 mt-1.5">Ctrl(Windows) / ⌘(Mac)＋クリックで複数選択。パネル外のバーを再度クリックで閉じます。</p>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
 
             {/* 期間 */}
             <div className="space-y-3">
               <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] ml-2">期間指定</label>
               <div className="flex items-center gap-4 bg-slate-100 p-2 rounded-2xl">
-                <select value={monthRange.start} onChange={e => setMonthRange(prev => ({ ...prev, start: e.target.value }))}
+                <select value={monthRange.start} onChange={e => {
+                  startTransition(() => { setMonthRange(prev => ({ ...prev, start: e.target.value })); });
+                }}
                   className="bg-transparent border-none text-sm font-black px-4 py-1.5 focus:ring-0 text-slate-700 cursor-pointer">
                   {[...Array(12)].map((_, i) => <option key={i+1} value={i+1}>{i+1}月</option>)}
                 </select>
                 <div className="w-4 h-0.5 bg-slate-300 rounded-full" />
-                <select value={monthRange.end} onChange={e => setMonthRange(prev => ({ ...prev, end: e.target.value }))}
+                <select value={monthRange.end} onChange={e => {
+                  startTransition(() => { setMonthRange(prev => ({ ...prev, end: e.target.value })); });
+                }}
                   className="bg-transparent border-none text-sm font-black px-4 py-1.5 focus:ring-0 text-slate-700 cursor-pointer">
                   {[...Array(12)].map((_, i) => <option key={i+1} value={i+1}>{i+1}月</option>)}
                 </select>
@@ -479,10 +1059,11 @@ const App = () => {
             {/* 粗利表示 */}
             <div className="space-y-3">
               <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] ml-2">粗利表示</label>
-              <button onClick={() => setShowProfit(p => !p)}
-                className={`flex items-center gap-2 px-5 py-2.5 rounded-2xl text-xs font-black transition-all duration-300 ${showProfit ? 'bg-emerald-500 text-white shadow-lg shadow-emerald-200' : 'bg-slate-100 text-slate-400 hover:bg-slate-200'}`}>
-                {showProfit ? <Eye size={14} /> : <EyeOff size={14} />}
-                {showProfit ? 'ON' : 'OFF'}
+              <button type="button" onClick={() => setShowProfit(p => !p)} disabled={viewMode === 'B'}
+                title={viewMode === 'B' ? 'パターン2は受注数のみのため未使用' : undefined}
+                className={`flex items-center gap-2 px-5 py-2.5 rounded-2xl text-xs font-black transition-all duration-300 ${viewMode === 'B' ? 'bg-slate-200 text-slate-400 cursor-not-allowed' : (showProfit ? 'bg-emerald-500 text-white shadow-lg shadow-emerald-200' : 'bg-slate-100 text-slate-400 hover:bg-slate-200')}`}>
+                {showProfit && viewMode === 'A' ? <Eye size={14} /> : <EyeOff size={14} />}
+                {viewMode === 'B' ? '—' : (showProfit ? 'ON' : 'OFF')}
               </button>
             </div>
           </div>}
@@ -506,6 +1087,7 @@ const App = () => {
             years={years}
             activeView={activeView}
             viewMode={viewMode}
+            viewBVariant={viewBVariant}
             isLeafLevel={isLeafLevel}
             checkedItems={checkedItems}
             onCheckedChange={setCheckedItems}
@@ -515,7 +1097,7 @@ const App = () => {
             onSaveCsv={handleSaveCsv}
             fmtAmt={fmtAmt}
             amountUnit={amountUnit}
-            showProfit={showProfit}
+            showProfit={showProfit && viewMode === 'A'}
             totalRow={totalRow}
           />
         )}
@@ -562,8 +1144,8 @@ const LoadingScreen = () => (
 );
 
 // ===== ダッシュボードビュー =====
-const DashboardView = ({
-  data, years, activeView, viewMode, isLeafLevel, checkedItems, onCheckedChange,
+const DashboardView = memo(({
+  data, years, activeView, viewMode, viewBVariant, isLeafLevel, checkedItems, onCheckedChange,
   onDrillDown, onNavigateTo, onSavePdf, onSaveCsv, fmtAmt, amountUnit, showProfit, totalRow,
 }) => {
   const toggleCheck = useCallback((name) => {
@@ -575,65 +1157,104 @@ const DashboardView = ({
   }, [onCheckedChange]);
 
   const { leaseCo, branch, item } = activeView;
+  const emptyView = { leaseCo: null, branch: null, item: null, orderClient: null, orderer: null };
 
   // 現在のレベルに応じたラベルを決定
   let levelLabel, levelTitle;
-  if (item !== null) {
-    levelLabel = '品番';
-    levelTitle = `${item} 品番別実績`;
-  } else if (viewMode === 'A') {
-    if (leaseCo !== null) {
+  if (viewMode === 'A') {
+    if (item !== null) {
+      levelLabel = '品番';
+      levelTitle = `${item} 品番別実績`;
+    } else if (leaseCo !== null) {
       levelLabel = '分類（分析名）';
       levelTitle = `${leaseCo} 分類別実績`;
     } else {
       levelLabel = 'リース会社';
       levelTitle = 'リース会社別 年次実績比較';
     }
+  } else if (viewBVariant === 'orderer') {
+    if (branch !== null) {
+      levelLabel = '注文者';
+      levelTitle = `${branch} 注文者別実績（受注数）`;
+    } else {
+      levelLabel = '工場';
+      levelTitle = '工場（送り先）別 年次実績比較（受注数）';
+    }
   } else {
     if (leaseCo !== null && branch !== null) {
-      levelLabel = '分類（分析名）';
-      levelTitle = `${branch} 分類別実績`;
-    } else if (leaseCo !== null) {
-      levelLabel = '工場（部店）';
-      levelTitle = `${leaseCo} 工場別実績`;
+      levelLabel = '分析名（大）';
+      levelTitle = `${leaseCo} 分析名(大)別実績（受注数）`;
+    } else if (branch !== null) {
+      levelLabel = 'メンテ';
+      levelTitle = `${branch} メンテ別実績（受注数）`;
     } else {
-      levelLabel = 'リース会社';
-      levelTitle = 'リース会社別 年次実績比較';
+      levelLabel = '工場';
+      levelTitle = '工場（送り先）別 年次実績比較（受注数）';
     }
   }
 
   // パンくずリスト
-  const crumbs = [
+  const crumbs = viewMode === 'A' ? [
     {
       label: '全体',
       icon: <Database size={14} />,
-      onClick: () => onNavigateTo({ leaseCo: null, branch: null, item: null }),
+      onClick: () => onNavigateTo({ ...emptyView }),
       isCurrent: leaseCo === null,
     },
+  ] : [
+    {
+      label: '全体',
+      icon: <Database size={14} />,
+      onClick: () => onNavigateTo({ ...emptyView }),
+      isCurrent: branch === null,
+    },
   ];
-  if (leaseCo !== null) {
-    crumbs.push({
-      label: leaseCo,
-      icon: <Building2 size={14} />,
-      onClick: () => onNavigateTo({ leaseCo, branch: null, item: null }),
-      isCurrent: branch === null && item === null,
-    });
-  }
-  if (branch !== null) {
-    crumbs.push({
-      label: branch,
-      icon: <Layers size={14} />,
-      onClick: () => onNavigateTo({ leaseCo, branch, item: null }),
-      isCurrent: item === null,
-    });
-  }
-  if (item !== null) {
-    crumbs.push({
-      label: item,
-      icon: <Tag size={14} />,
-      onClick: null,
-      isCurrent: true,
-    });
+
+  if (viewMode === 'A') {
+    if (leaseCo !== null) {
+      crumbs.push({
+        label: leaseCo,
+        icon: <Building2 size={14} />,
+        onClick: () => onNavigateTo({ leaseCo, branch: null, item: null, orderClient: null, orderer: null }),
+        isCurrent: item === null,
+      });
+    }
+    if (item !== null) {
+      crumbs.push({
+        label: item,
+        icon: <Tag size={14} />,
+        onClick: null,
+        isCurrent: true,
+      });
+    }
+  } else {
+    if (viewBVariant === 'orderer') {
+      if (branch !== null) {
+        crumbs.push({
+          label: branch,
+          icon: <Layers size={14} />,
+          onClick: () => onNavigateTo({ ...emptyView }),
+          isCurrent: true,
+        });
+      }
+    } else {
+      if (branch !== null) {
+        crumbs.push({
+          label: branch,
+          icon: <Layers size={14} />,
+          onClick: () => onNavigateTo({ ...emptyView }),
+          isCurrent: leaseCo === null,
+        });
+      }
+      if (leaseCo !== null && branch !== null) {
+        crumbs.push({
+          label: leaseCo,
+          icon: <Tag size={14} />,
+          onClick: () => onNavigateTo({ ...emptyView, branch, item: null, orderClient: null, orderer: null, leaseCo: null }),
+          isCurrent: true,
+        });
+      }
+    }
   }
 
   return (
@@ -677,7 +1298,7 @@ const DashboardView = ({
           <h3 className="font-black text-slate-800 text-base md:text-xl flex items-center gap-2">
             <Tag className="text-emerald-500 flex-shrink-0" />
             {levelTitle}
-            {amountUnit === 'thousand' && <span className="ml-1 text-emerald-500 text-sm">（千円）</span>}
+            {amountUnit === 'thousand' && showProfit && <span className="ml-1 text-emerald-500 text-sm">（千円）</span>}
           </h3>
           <div className="flex items-center gap-3 flex-wrap">
             <div className="text-xs font-bold text-slate-400 flex items-center gap-1.5">
@@ -837,7 +1458,7 @@ const DashboardView = ({
       </div>
     </div>
   );
-};
+});
 
 // ===== 粗利収支分析ビュー =====
 
