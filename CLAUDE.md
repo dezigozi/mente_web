@@ -214,7 +214,7 @@ bg-green-900 text-white hover:bg-emerald-600 rounded-3xl font-black
   - `fix:` バグ修正
   - `refactor:` 動作変更なしのリファクタリング
   - `docs:` ドキュメント更新のみ
-- `public/data/master_data.csv` はコミット対象（データ更新のたびにコミット）
+- `public/data/master_data.csv` は**データ置き場として**本リポジトリに含める前提だが、**GitHub の単一ファイル 100MB 制限**を超える場合は、Git LFS の利用・ファイル分割・社内配布からの手動配置のいずれかで運用し、**push が拒否されたらコミットに含めない**（`README` の手動配置手順に従う）
 - `.env` はコミット禁止（`.gitignore` に含める）
 
 ---
