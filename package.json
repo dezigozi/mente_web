@@ -6,6 +6,7 @@
   "description": "メンテ実績レポート（Web版）",
   "scripts": {
     "dev": "vite",
+    "prebuild": "node scripts/bundle-master-csv.mjs",
     "build": "vite build",
     "preview": "vite preview"
   },

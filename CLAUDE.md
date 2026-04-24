@@ -214,7 +214,9 @@ bg-green-900 text-white hover:bg-emerald-600 rounded-3xl font-black
   - `fix:` バグ修正
   - `refactor:` 動作変更なしのリファクタリング
   - `docs:` ドキュメント更新のみ
-- `public/data/master_data.csv` は**データ置き場として**本リポジトリに含める前提だが、**GitHub の単一ファイル 100MB 制限**を超える場合は、Git LFS の利用・ファイル分割・社内配布からの手動配置のいずれかで運用し、**push が拒否されたらコミットに含めない**（`README` の手動配置手順に従う）
+- `public/data/master_data.csv` は**ローカル／ビルド成果**に必ず存在する想定。Git に含めない場合の本番:
+  - **Vercel**: Project Settings → Environment Variables に **`MASTER_CSV_BUNDLE_URL`** = ビルドマシンが `GET` できる CSV の URL。`prebuild`（`scripts/bundle-master-csv.mjs`）が1回取得して `public/data/` に書き、`vite build` で**同一デプロイに同梱**（ブラウザ CORS 不要。`loadCsvData` は常に `/data/master_data.csv` 相当のみ）。
+- **GitHub の 100MB 制限**で `master_data.csv` を push できない場合は、上記、または Git LFS・分割等。
 - `.env` はコミット禁止（`.gitignore` に含める）
 
 ---

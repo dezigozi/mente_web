@@ -102,7 +102,9 @@ npx vercel --prod
 
 # または GitHub 連携で master ブランチへの push で自動デプロイ
 ```
-`VITE_PASSWORD` は Vercel の Environment Variables に設定する。
+**Environment Variables（本番）**
+- `VITE_PASSWORD` — 画面のパスワード保護（任意）
+- **`MASTER_CSV_BUNDLE_URL`** — リポジトリに `master_data.csv` を含めない場合に必須に近い。CSV を `GET` できる URL（S3 署名付きなど）。ビルド時に1回だけ取得し `public/data/` に書いてから `vite build` する（`prebuild`）。詳細は [`.env.example`](./.env.example) ・ [`CLAUDE.md`](./CLAUDE.md) のデプロイ節。
 
 ---
 

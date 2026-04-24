@@ -159,17 +159,17 @@ export function generateFullDataCsvContent(headers, rows) {
   return out.join('\r\n');
 }
 
-/** サブパス配信（Vite `base`）でも public を正しく指す */
-function masterCsvUrl() {
+/** 同一オリジン: prebuild（MASTER_CSV_BUNDLE_URL）で public/data に置いた CSV がビルドに含まれる */
+function masterCsvPathRel() {
   const b = import.meta.env.BASE_URL || '/';
-  const path = b.endsWith('/') ? `${b}data/master_data.csv` : `${b}/data/master_data.csv`;
-  return path;
+  return b.endsWith('/') ? `${b}data/master_data.csv` : `${b}/data/master_data.csv`;
 }
 
 export async function loadCsvData() {
-  const response = await fetch(masterCsvUrl());
+  const p = masterCsvPathRel();
+  const response = await fetch(p);
   if (!response.ok) {
-    throw new Error(`HTTP ${response.status}: ${response.statusText}（${masterCsvUrl()}）`);
+    throw new Error(`HTTP ${response.status}: ${response.statusText}（${p}）`);
   }
   const csv = await response.text();
   return parseCsv(csv);
