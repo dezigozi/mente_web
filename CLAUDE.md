@@ -200,9 +200,81 @@ bg-green-900 text-white hover:bg-emerald-600 rounded-3xl font-black
 
 ## キャッシュルール
 
-- キャッシュキー: ソース上の定数 `CACHE_KEY`（例: `maint_report_data_v6`）。`App.jsx` と一致させる
+- キャッシュキー: ソース上の定数 `CACHE_KEY`（現在: `maint_report_data_v10`）。`App.jsx` と一致させる
 - スキーマ変更（フィールド追加など）をした場合は **App.jsx の `CACHE_KEY` のバージョン番号をインクリメント**し、本節の記述も合わせて更新する
 - キャッシュのライフサイクル管理は `src/utils/db.js` のみで行う
+
+---
+
+## タブ価格レポート（TabPriceView）
+
+### 概要
+`public/data/tab_data.csv`（TAB価格マスタ）と `master_data.csv`（売上実績）を突合し、
+以下2種類の異常を検知してリース会社ごとにドリルダウン表示するビュー。
+
+| セクション | 検知内容 |
+|---|---|
+| タブ価格未設定品番 | TAB価格マスタに存在しない品番が適用日以降に売上発生 |
+| 単価不一致 | TAB価格マスタに存在するが、実売単価が TAB価格と異なる |
+
+### 定数（App.jsx 内 TabPriceView の外側に定義）
+
+```js
+/** 対象リース会社（この4社以外はフィルターで除外） */
+const TAB_TARGET_LEASES = new Set(['OR', 'NCS', '西出', 'MAL']);
+
+/** 対象分析名（NFKC正規化済み）— エアコン関連は対象外 */
+const TAB_ALLOWED_ITEM_NORMS = new Set(['オルタネーター', 'スターター', 'コンプレッサー']);
+const normTabItem = s => (s || '').normalize('NFKC').trim();
+```
+
+### 除外ルール（leaseFilteredRows で全適用）
+
+| 除外条件 | 理由 |
+|---|---|
+| `TAB_TARGET_LEASES` 外のリース会社 | 対象4社のみ |
+| `unitPrice === 0` | 0円売上は対象外 |
+| `slipType === '20'` | 伝票区分20は除外 |
+| `productCode` が `/^R[HB]/i` に一致 | RH・RB始まりは適用外 |
+
+### データフロー
+
+```
+rawData.rows
+  ↓ leaseFilteredRows      — 対象4社 + 共通除外（unitPrice=0, slipType=20, RH/RB品番）
+  ↓ applicableDateFilteredRows — リース会社ごとの適用日（tab_data の最新日）以降のみ
+  ├─ missingItems           — TABマスタに品番なし → 未設定品番リスト
+  └─ periodFilteredRows     — さらに期間フィルター（単価不一致用）
+       └─ mismatchItems     — TABマスタに存在するが単価が異なる → 不一致リスト
+```
+
+### tab_data.csv のロード
+
+- `csvLoader.js` の `loadTabData()` を使う（`useEffect` で初回のみ取得）
+- **IndexedDB にはキャッシュしない**（tab_data は小さく変更頻度が高いため毎回フェッチ）
+- `tabMap`: `Map<リース会社, Map<品番, { price, makerCode, dateStr }>>`
+- `applicableDates`: `Map<リース会社, { year, month, day }>`（リース会社ごとの最新適用日）
+
+### UI 構造（ドリルダウン2階層）
+
+```
+第1階層（初期）: リース会社ごとに 品番数 / 件数 を表示。行クリックで第2階層へ。
+第2階層（ドリル）: 品番一覧テーブル。パンくずと「← 一覧に戻る」ボタンで戻る。
+```
+
+- セクション切り替え（未設定 ↔ 不一致）時は自動的に第1階層に戻し、検索・ソートをリセット
+- `drillLease` state で管理（`null` = 第1階層、`string` = そのリース会社にドリルダウン中）
+
+### csvLoader.js で追加した列
+
+```js
+const COL_SLIP      = idx['売上伝票ＮＯ'] ?? idx['売上伝票NO'] ?? 0; // slipNo
+const COL_SLIP_TYPE = idx['伝票区分']      ?? 2;                      // slipType
+const COL_RECV_NAME = idx['受注者名']      ?? 6;                      // receiverName
+// unitPrice は COL_PRICE（単価列）から取得
+```
+
+これらを `rows.push({...})` に追加した場合は必ず **`CACHE_KEY` をインクリメント**する。
 
 ---
 

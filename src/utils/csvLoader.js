@@ -185,9 +185,12 @@ function parseCsv(csv) {
   const idx = {};
   headers.forEach((h, i) => { idx[h] = i; });
 
-  const COL_DATE   = idx['納品日']        ?? 1;
-  const COL_CUST   = idx['得意先名']      ?? 4;
-  const COL_ORDER  = idx['注文者名']      ?? 10;
+  const COL_SLIP      = idx['売上伝票ＮＯ'] ?? idx['売上伝票NO'] ?? 0;
+  const COL_DATE      = idx['納品日']        ?? 1;
+  const COL_SLIP_TYPE = idx['伝票区分']      ?? 2;
+  const COL_CUST      = idx['得意先名']      ?? 4;
+  const COL_RECV_NAME = idx['受注者名']      ?? 6;
+  const COL_ORDER     = idx['注文者名']      ?? 9;
   const COL_PHONE  = idx['宅配先電話番号'] ?? 11;
   const COL_BRANCH = idx['送り先名']      ?? 12;
   const COL_ADDR1  = idx['住所１']        ?? 14;
@@ -345,6 +348,10 @@ function parseCsv(csv) {
       productCode,
       productName,
       item: item || '(未分類)',
+      slipNo:       vals[COL_SLIP]?.trim()      || '',
+      slipType:     vals[COL_SLIP_TYPE]?.trim() || '',
+      receiverName: vals[COL_RECV_NAME]?.trim() || '',
+      unitPrice,
       quantity: qty,
       sales,
       profit,
@@ -443,7 +450,7 @@ function parseDate(dateValue) {
   return fiscalYearMonthFromCalendar(y, m);
 }
 
-function parseCSVLine(line) {
+export function parseCSVLine(line) {
   const result = [];
   let current = '';
   let inQuotes = false;
@@ -467,4 +474,65 @@ function parseCSVLine(line) {
   }
   result.push(current);
   return result;
+}
+
+/**
+ * tab_data.csv を読み込み、タブ価格マップと適用日マップを返す。
+ * - tabMap        : Map<リース会社, Map<品番, TAB価格>>
+ * - applicableDates: Map<リース会社, {year, month, day}> — リース会社ごとの最新適用日
+ * 同じ（リース会社, 品番）が複数行ある場合は後勝ち（CSV末尾が最新想定）。
+ * @returns {Promise<{ tabMap: Map<string, Map<string, number>>, applicableDates: Map<string, {year:number,month:number,day:number}> }>}
+ */
+export async function loadTabData() {
+  const b = import.meta.env.BASE_URL || '/';
+  const p = b.endsWith('/') ? `${b}data/tab_data.csv` : `${b}/data/tab_data.csv`;
+  const response = await fetch(p);
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}: ${response.statusText}（${p}）`);
+  }
+  const csv = await response.text();
+  const lines = csv.trim().split('\n').filter(l => l.trim());
+  if (lines.length === 0) return { tabMap: new Map(), applicableDates: new Map() };
+
+  const headers = parseCSVLine(lines[0]).map(h => h.trim().replace(/^\uFEFF/, ''));
+  const idx = {};
+  headers.forEach((h, i) => { idx[h] = i; });
+
+  const COL_LEASE      = idx['メンテ']      ?? 0;
+  const COL_CODE       = idx['品番']        ?? 1;
+  const COL_MAKER_CODE = idx['メーカーコード'] ?? 2;
+  const COL_PRICE      = idx['TAB価格']     ?? 3;
+  const COL_DATE       = idx['適用日']      ?? 4;
+
+  /**
+   * tabMap: Map<lease, Map<code, { price: number, makerCode: string, dateStr: string }>>
+   * applicableDates: Map<lease, { year, month, day }> — リース会社ごとの最新適用日
+   */
+  const tabMap = new Map();
+  /** @type {Map<string, {year:number,month:number,day:number}>} */
+  const applicableDates = new Map();
+
+  for (let i = 1; i < lines.length; i++) {
+    const vals      = parseCSVLine(lines[i]);
+    const lease     = vals[COL_LEASE]?.trim()      || '';
+    const code      = vals[COL_CODE]?.trim()       || '';
+    const makerCode = vals[COL_MAKER_CODE]?.trim() || '';
+    const price     = parseFloat(vals[COL_PRICE]?.trim()) || 0;
+    const dateStr   = vals[COL_DATE]?.trim()       || '';
+    if (!lease || !code) continue;
+
+    if (!tabMap.has(lease)) tabMap.set(lease, new Map());
+    tabMap.get(lease).set(code, { price, makerCode, dateStr });
+
+    // 適用日 "2026年4月2日" をパース → リース会社ごとの最新日を保持
+    const dm = dateStr.match(/(\d{4})年(\d{1,2})月(\d{1,2})日/);
+    if (dm) {
+      const d   = { year: +dm[1], month: +dm[2], day: +dm[3] };
+      const val = d.year * 10000 + d.month * 100 + d.day;
+      const ex  = applicableDates.get(lease);
+      const exV = ex ? ex.year * 10000 + ex.month * 100 + ex.day : 0;
+      if (val > exV) applicableDates.set(lease, d);
+    }
+  }
+  return { tabMap, applicableDates };
 }

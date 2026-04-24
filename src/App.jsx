@@ -7,7 +7,7 @@ import {
   CheckSquare, Square, Menu, X, Package, Search, ArrowUpDown,
 } from 'lucide-react';
 import { getCache, setCache, clearCache } from './utils/db';
-import { loadCsvData, generateFullDataCsvContent } from './utils/csvLoader';
+import { loadCsvData, generateFullDataCsvContent, loadTabData } from './utils/csvLoader';
 /**
  * メンテ実績ダッシュ（単一ファイル構成）
  *
@@ -31,7 +31,7 @@ import {
   generateDetailCsvContent, calcYoY, formatCurrencyFull,
 } from './utils/aggregator';
 
-const CACHE_KEY = 'maint_report_data_v7';
+const CACHE_KEY = 'maint_report_data_v10';
 
 const ALLOWED_ITEMS = ['オルタネーター', 'スターター', 'コンプレッサー', 'エアコン関連'];
 // NFKC正規化：半角カナ→全角カナ、全角英数→半角英数 に統一して比較
@@ -237,7 +237,7 @@ const App = () => {
   const [bFactorySelected, setBFactorySelected] = useState([]);
   const [bSearchPhone, setBSearchPhone] = useState('');
   const [bSearchPref, setBSearchPref] = useState('');
-  const [reportMode, setReportMode] = useState('dashboard'); // 'dashboard' | 'margin'
+  const [reportMode, setReportMode] = useState('dashboard'); // 'dashboard' | 'margin' | 'tab'
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [, startTransition] = useTransition();
 
@@ -790,6 +790,18 @@ const App = () => {
             <Package size={20} />
             <span className="font-black text-sm tracking-tight">粗利収支分析</span>
           </button>
+          <button
+            onClick={() => {
+              startTransition(() => { setReportMode('tab'); setIsSidebarOpen(false); });
+            }}
+            className={`flex items-center gap-3 w-full p-4 rounded-2xl transition-all duration-300 ${
+              reportMode === 'tab'
+                ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-600/30 scale-105'
+                : 'text-green-400 hover:bg-green-800'
+            }`}>
+            <Tag size={20} />
+            <span className="font-black text-sm tracking-tight">タブ価格レポート</span>
+          </button>
 
           <div className="pt-8 pb-2 px-4 text-[10px] font-black text-green-500 uppercase tracking-widest">
             Reports Export
@@ -1221,6 +1233,9 @@ const App = () => {
         )}
         {rawData && !isLoading && reportMode === 'margin' && (
           <ProductMarginView items={allProductMonthly} leaseCompanies={leaseCompanies} />
+        )}
+        {rawData && !isLoading && reportMode === 'tab' && (
+          <TabPriceView rows={rawData.rows} leaseCompanies={leaseCompanies} />
         )}
       </main>
     </div>
@@ -1654,6 +1669,651 @@ const DashboardView = memo(({
     </div>
   );
 });
+
+// ===== タブ価格レポートビュー =====
+
+const toCalendarYear = (fy, m) => (m <= 3 ? fy + 1 : fy);
+
+/** 対象カテゴリ（NFKC正規化済み） — エアコン関連は除外 */
+const TAB_ALLOWED_ITEM_NORMS = new Set(['オルタネーター', 'スターター', 'コンプレッサー']);
+const normTabItem = s => (s || '').normalize('NFKC').trim();
+
+/** タブ価格レポート対象リース会社（固定） */
+const TAB_TARGET_LEASES = new Set(['OR', 'NCS', '西出', 'MAL']);
+
+const TabPriceView = ({ rows, leaseCompanies }) => {
+  const [tabData, setTabData]       = useState(null); // { tabMap, applicableDates }
+  const [tabLoading, setTabLoading] = useState(true);
+  const [tabError, setTabError]     = useState(null);
+  const [section, setSection]       = useState('missing'); // 'missing' | 'mismatch'
+  const [selectedLeases, setSelectedLeases] = useState(new Set());
+  const [search, setSearch]         = useState('');
+  const [sortKey, setSortKey]       = useState(null);
+  const [sortAsc, setSortAsc]       = useState(true);
+  const [drillLease, setDrillLease] = useState(null); // null=リース会社一覧, string=ドリルダウン中
+
+  // 年月オプション（単価不一致用期間フィルター）
+  const ymOptions = useMemo(() => {
+    const set = new Set();
+    rows.forEach(r => {
+      if (r.fiscalYear && r.month)
+        set.add(toCalendarYear(r.fiscalYear, r.month) * 100 + r.month);
+    });
+    return [...set].sort((a, b) => a - b).map(v => ({ year: Math.floor(v / 100), month: v % 100 }));
+  }, [rows]);
+
+  const availYears = useMemo(
+    () => [...new Set(ymOptions.map(o => o.year))].sort((a, b) => a - b),
+    [ymOptions]
+  );
+
+  const [fromYear, setFromYear]   = useState(null);
+  const [fromMonth, setFromMonth] = useState(null);
+  const [toYear, setToYear]       = useState(null);
+  const [toMonth, setToMonth]     = useState(null);
+
+  useEffect(() => {
+    if (!ymOptions.length) return;
+    const first = ymOptions[0], last = ymOptions[ymOptions.length - 1];
+    setFromYear(first.year); setFromMonth(first.month);
+    setToYear(last.year);   setToMonth(last.month);
+  }, [ymOptions.length]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    loadTabData()
+      .then(d => setTabData(d))
+      .catch(e => setTabError(e.message))
+      .finally(() => setTabLoading(false));
+  }, []);
+
+  const toggleLease = useCallback(l => {
+    setSelectedLeases(prev => {
+      const next = new Set(prev);
+      next.has(l) ? next.delete(l) : next.add(l);
+      return next;
+    });
+  }, []);
+
+  // 対象4社 ＋ 共通除外（単価0円・伝票区分20）＋ ユーザー選択によるリース会社フィルター
+  const leaseFilteredRows = useMemo(() => {
+    return rows.filter(r => {
+      if (!TAB_TARGET_LEASES.has(r.leaseCompany)) return false;
+      if (r.unitPrice === 0) return false;
+      if (r.slipType === '20') return false;
+      if (/^R[HB]/i.test(r.productCode)) return false;
+      if (selectedLeases.size > 0 && !selectedLeases.has(r.leaseCompany)) return false;
+      return true;
+    });
+  }, [rows, selectedLeases]);
+
+  // 適用日フィルター（両セクション共通 — リース会社ごとの適用日以降のみ）
+  const applicableDateFilteredRows = useMemo(() => {
+    if (!tabData?.applicableDates) return leaseFilteredRows;
+    const { applicableDates } = tabData;
+    return leaseFilteredRows.filter(r => {
+      const appDate = applicableDates.get(r.leaseCompany);
+      if (!appDate) return true;
+      const calYear = toCalendarYear(r.fiscalYear, r.month);
+      return calYear * 100 + r.month >= appDate.year * 100 + appDate.month;
+    });
+  }, [leaseFilteredRows, tabData]);
+
+  // 適用日 ＋ 期間フィルター（単価不一致の絞り込み用）
+  const periodFilteredRows = useMemo(() => {
+    const fromVal = fromYear ? fromYear * 100 + (fromMonth || 1) : 0;
+    const toVal   = toYear   ? toYear   * 100 + (toMonth   || 12) : 999999;
+    return applicableDateFilteredRows.filter(r => {
+      if (!r.fiscalYear || !r.month) return false;
+      const v = toCalendarYear(r.fiscalYear, r.month) * 100 + r.month;
+      return v >= fromVal && v <= toVal;
+    });
+  }, [applicableDateFilteredRows, fromYear, fromMonth, toYear, toMonth]);
+
+  // タブ価格未設定品番
+  // 条件: 分析名(大) ∈ {オルタネーター,スターター,コンプレッサー}
+  //       売上日 >= 適用日（applicableDateFilteredRows で保証済み）
+  //       (リース会社, 品番) が tab_data に存在しない
+  const missingItems = useMemo(() => {
+    if (!tabData) return [];
+    const { tabMap } = tabData;
+    const map = new Map();
+    for (const r of applicableDateFilteredRows) {
+      if (!TAB_ALLOWED_ITEM_NORMS.has(normTabItem(r.item))) continue;
+      const codes = tabMap.get(r.leaseCompany);
+      if (codes && codes.has(r.productCode)) continue;
+      const key = `${r.leaseCompany}||${r.productCode}`;
+      if (!map.has(key)) {
+        map.set(key, {
+          leaseCompany:  r.leaseCompany,
+          productCode:   r.productCode,
+          productName:   r.productName,
+          item:          r.item,
+          count:         0,
+          totalSales:    0,
+          latestDateVal: 0,
+          latestYear:    null,
+          latestMonth:   null,
+        });
+      }
+      const e = map.get(key);
+      e.count      += r.quantity || 1;
+      e.totalSales += r.sales;
+      const calY = toCalendarYear(r.fiscalYear, r.month);
+      const dv   = calY * 100 + r.month;
+      if (dv > e.latestDateVal) { e.latestDateVal = dv; e.latestYear = calY; e.latestMonth = r.month; }
+    }
+    return [...map.values()];
+  }, [applicableDateFilteredRows, tabData]);
+
+  // 単価不一致
+  // 条件: 分析名(大) ∈ {オルタネーター,スターター,コンプレッサー}
+  //       (リース会社, 品番) が tab_data に存在する
+  //       実売単価 ≠ TAB価格
+  const mismatchItems = useMemo(() => {
+    if (!tabData) return [];
+    const { tabMap } = tabData;
+    const map = new Map();
+    for (const r of periodFilteredRows) {
+      if (!TAB_ALLOWED_ITEM_NORMS.has(normTabItem(r.item))) continue;
+      const codes = tabMap.get(r.leaseCompany);
+      if (!codes) continue;
+      const tabEntry = codes.get(r.productCode);
+      if (tabEntry === undefined) continue;
+      const tabPrice = tabEntry.price;
+      if (r.unitPrice == null || r.unitPrice === tabPrice) continue;
+      const key = `${r.leaseCompany}||${r.productCode}||${r.unitPrice}`;
+      if (!map.has(key)) {
+        map.set(key, {
+          leaseCompany: r.leaseCompany,
+          productCode:  r.productCode,
+          productName:  r.productName,
+          item:         r.item,
+          tabPrice,
+          actualPrice:  r.unitPrice,
+          diff:         r.unitPrice - tabPrice,
+          count:        0,
+          totalSales:   0,
+        });
+      }
+      const e = map.get(key);
+      e.count      += r.quantity || 1;
+      e.totalSales += r.sales;
+    }
+    return [...map.values()];
+  }, [periodFilteredRows, tabData]);
+
+  const fmtYen = v => `¥${Math.round(v || 0).toLocaleString()}`;
+
+  const currentItems = section === 'missing' ? missingItems : mismatchItems;
+
+  // リース会社ごとの集計（第1階層）
+  const leaseSummary = useMemo(() => {
+    const map = new Map();
+    for (const item of currentItems) {
+      const l = item.leaseCompany;
+      if (!map.has(l)) map.set(l, { leaseCompany: l, codeCount: 0, totalCount: 0, totalSales: 0 });
+      const e = map.get(l);
+      e.codeCount++;
+      e.totalCount += item.count;
+      e.totalSales += item.totalSales;
+    }
+    return [...map.values()].sort((a, b) => a.leaseCompany.localeCompare(b.leaseCompany));
+  }, [currentItems]);
+
+  // ドリルダウン中のリース会社の品番一覧（第2階層）
+  const drillItems = useMemo(() =>
+    drillLease ? currentItems.filter(r => r.leaseCompany === drillLease) : [],
+    [currentItems, drillLease]
+  );
+
+  // 検索・ソートのベース
+  const searchBase = drillLease ? drillItems : leaseSummary;
+
+  const searched = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return searchBase;
+    if (drillLease) {
+      return searchBase.filter(r =>
+        r.productCode?.toLowerCase().includes(q) ||
+        r.productName?.toLowerCase().includes(q)
+      );
+    }
+    return searchBase.filter(r => r.leaseCompany?.toLowerCase().includes(q));
+  }, [searchBase, search, drillLease]);
+
+  const sorted = useMemo(() => {
+    if (!sortKey) return searched;
+    return [...searched].sort((a, b) => {
+      const av = a[sortKey], bv = b[sortKey];
+      const cmp = typeof av === 'number' ? av - bv : String(av || '').localeCompare(String(bv || ''));
+      return sortAsc ? cmp : -cmp;
+    });
+  }, [searched, sortKey, sortAsc]);
+
+  const handleSort = key => {
+    if (sortKey === key) setSortAsc(a => !a);
+    else { setSortKey(key); setSortAsc(true); }
+  };
+
+  const SortIcon = ({ k }) => (
+    <ArrowUpDown size={12} className={`inline ml-1 ${sortKey === k ? 'text-emerald-400' : 'text-slate-400'}`} />
+  );
+
+  const handleDrillIn = lease => { setDrillLease(lease); setSortKey(null); setSearch(''); };
+  const handleDrillOut = () => { setDrillLease(null); setSortKey(null); setSearch(''); };
+
+  // 適用日表示（未設定セクション用）
+  const applicableDateDisplay = useMemo(() => {
+    if (!tabData?.applicableDates) return [];
+    const dates = tabData.applicableDates;
+    const leases = selectedLeases.size > 0 ? [...selectedLeases] : [...dates.keys()];
+    return leases
+      .filter(l => TAB_TARGET_LEASES.has(l) && dates.has(l))
+      .map(l => { const d = dates.get(l); return { lease: l, label: `${d.year}年${d.month}月${d.day}日` }; })
+      .sort((a, b) => a.lease.localeCompare(b.lease));
+  }, [tabData, selectedLeases]);
+
+  const selMonths = yr => ymOptions.filter(o => o.year === yr).map(o => o.month);
+
+  const handleExportCsv = () => {
+    if (!tabData) return;
+    const { tabMap, applicableDates } = tabData;
+    const isMissing = section === 'missing';
+    const esc = v => { const s = v == null ? '' : String(v); return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
+
+    // 出力列: 売上伝票ＮＯ / 納品日 / リース会社 / メーカーコード / 品番 / 商品名 /
+    //         分析名(大) / 受注者名 / 単価 / TAB価格 / 差額 / 適用日
+    const headers = [
+      '売上伝票ＮＯ', '納品日', 'リース会社', 'メーカーコード',
+      '品番', '商品名', '分析名(大)', '受注者名',
+      '単価', 'TAB価格', '差額', '適用日',
+    ];
+    const lines = [headers.map(esc).join(',')];
+
+    const sourceRows = isMissing ? leaseFilteredRows : periodFilteredRows;
+    for (const r of sourceRows) {
+      if (!TAB_ALLOWED_ITEM_NORMS.has(normTabItem(r.item))) continue;
+      const codes    = tabMap.get(r.leaseCompany);
+      const tabEntry = codes?.get(r.productCode);
+
+      if (isMissing) {
+        // 適用日以降 かつ tab_data に存在しない行のみ
+        const appDate = applicableDates.get(r.leaseCompany);
+        if (appDate) {
+          const calYear = toCalendarYear(r.fiscalYear, r.month);
+          if (calYear * 100 + r.month < appDate.year * 100 + appDate.month) continue;
+        }
+        if (tabEntry !== undefined) continue;
+        lines.push([
+          r.slipNo, r.date, r.leaseCompany, '',
+          r.productCode, r.productName, r.item, r.receiverName,
+          r.unitPrice, '', '', '',
+        ].map(esc).join(','));
+      } else {
+        // tab_data に存在し、単価が異なる行のみ
+        if (tabEntry === undefined) continue;
+        const tabPrice = tabEntry.price;
+        if (r.unitPrice == null || r.unitPrice === tabPrice) continue;
+        lines.push([
+          r.slipNo, r.date, r.leaseCompany, tabEntry.makerCode,
+          r.productCode, r.productName, r.item, r.receiverName,
+          r.unitPrice, tabPrice, r.unitPrice - tabPrice, tabEntry.dateStr,
+        ].map(esc).join(','));
+      }
+    }
+
+    const blob = new Blob(['\uFEFF' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8;' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `タブ価格レポート_${isMissing ? '未設定品番' : '単価不一致'}_${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+  };
+
+  return (
+    <div className="space-y-6">
+      {/* タイトル */}
+      <div className="bg-gradient-to-r from-slate-800 to-slate-700 rounded-3xl p-6 text-white">
+        <div className="flex items-center gap-3 mb-1">
+          <Tag size={24} className="text-emerald-400" />
+          <h2 className="text-2xl font-black tracking-tight">タブ価格レポート</h2>
+        </div>
+        <p className="text-slate-400 text-sm font-bold">
+          売上実績とタブ価格マスタの突合 — 未設定品番の検知 ＆ 単価不一致の検知
+        </p>
+        <p className="text-slate-500 text-xs mt-1">対象カテゴリ: オルタネーター・スターター・コンプレッサー</p>
+      </div>
+
+      {/* tab_data 読み込みエラー */}
+      {tabError && (
+        <div className="bg-rose-50 border border-rose-200 rounded-2xl p-4 flex items-center gap-3 text-rose-700">
+          <AlertCircle size={18} />
+          <span className="font-bold text-sm">tab_data.csv の読み込みに失敗しました: {tabError}</span>
+        </div>
+      )}
+
+      {/* リース会社フィルター（対象4社のみ） */}
+      <div className="bg-white rounded-3xl shadow-sm border border-slate-100 p-6 no-print">
+        <div className="text-xs font-black text-slate-400 uppercase tracking-widest mb-3">リース会社フィルター <span className="normal-case font-bold text-slate-300">（対象: OR / NCS / 西出 / MAL）</span></div>
+        <div className="flex flex-wrap gap-2">
+          {leaseCompanies.filter(l => TAB_TARGET_LEASES.has(l)).map(l => {
+            const checked = selectedLeases.has(l);
+            return (
+              <button key={l} onClick={() => toggleLease(l)}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-black border transition-all ${
+                  checked
+                    ? 'bg-emerald-500 text-white border-emerald-500 shadow'
+                    : 'bg-slate-50 text-slate-600 border-slate-200 hover:border-emerald-300'
+                }`}>
+                {checked ? <CheckSquare size={12} /> : <Square size={12} />}
+                {l}
+              </button>
+            );
+          })}
+          {selectedLeases.size > 0 && (
+            <button onClick={() => setSelectedLeases(new Set())}
+              className="px-3 py-1.5 rounded-xl text-xs font-black text-rose-500 border border-rose-200 hover:bg-rose-50">
+              クリア
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* 適用日表示（両セクション共通） */}
+      {!tabLoading && applicableDateDisplay.length > 0 && (
+        <div className="bg-emerald-50 border border-emerald-100 rounded-2xl p-4">
+          <div className="text-[10px] font-black text-emerald-600 uppercase tracking-widest mb-2">
+            タブ価格マスタ 適用日（この日以降の売上を突合しています）
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {applicableDateDisplay.map(({ lease, label }) => (
+              <div key={lease}
+                className="flex items-center gap-2 bg-white rounded-xl px-3 py-1.5 border border-emerald-100 text-xs font-bold shadow-sm">
+                <span className="text-emerald-600 font-black">{lease}</span>
+                <span className="text-slate-500">{label}以降</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* 期間フィルター（単価不一致セクションのみ） */}
+      {section === 'mismatch' && (
+        <div className="bg-white rounded-3xl shadow-sm border border-slate-100 p-6 no-print">
+          <div className="text-xs font-black text-slate-400 uppercase tracking-widest mb-3">期間フィルター</div>
+          <div className="flex flex-wrap gap-4 items-end">
+            <div>
+              <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">開始年月</div>
+              <div className="flex gap-1">
+                <select value={fromYear ?? ''} onChange={e => setFromYear(Number(e.target.value) || null)}
+                  className="bg-slate-50 border border-slate-200 rounded-xl px-2 py-2 text-xs font-bold text-slate-700">
+                  {availYears.map(y => <option key={y} value={y}>{y}年</option>)}
+                </select>
+                <select value={fromMonth ?? ''} onChange={e => setFromMonth(Number(e.target.value) || null)}
+                  className="bg-slate-50 border border-slate-200 rounded-xl px-2 py-2 text-xs font-bold text-slate-700">
+                  {(fromYear ? selMonths(fromYear) : []).map(m => <option key={m} value={m}>{m}月</option>)}
+                </select>
+              </div>
+            </div>
+            <div className="text-slate-400 font-black pb-2">〜</div>
+            <div>
+              <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">終了年月</div>
+              <div className="flex gap-1">
+                <select value={toYear ?? ''} onChange={e => setToYear(Number(e.target.value) || null)}
+                  className="bg-slate-50 border border-slate-200 rounded-xl px-2 py-2 text-xs font-bold text-slate-700">
+                  {availYears.map(y => <option key={y} value={y}>{y}年</option>)}
+                </select>
+                <select value={toMonth ?? ''} onChange={e => setToMonth(Number(e.target.value) || null)}
+                  className="bg-slate-50 border border-slate-200 rounded-xl px-2 py-2 text-xs font-bold text-slate-700">
+                  {(toYear ? selMonths(toYear) : []).map(m => <option key={m} value={m}>{m}月</option>)}
+                </select>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* サマリーバッジ */}
+      <div className="grid grid-cols-2 gap-4">
+        <div className="bg-rose-50 border border-rose-100 rounded-2xl p-4">
+          <div className="text-[10px] font-black text-rose-400 uppercase tracking-widest mb-2">タブ価格未設定品番</div>
+          <div className="flex items-end gap-5">
+            <div>
+              <span className="text-3xl font-black text-rose-600">{missingItems.length.toLocaleString()}</span>
+              <span className="text-xs font-black text-rose-400 ml-1">品番</span>
+            </div>
+            <div className="pb-0.5">
+              <span className="text-xl font-black text-rose-400">{missingItems.reduce((s, r) => s + r.count, 0).toLocaleString()}</span>
+              <span className="text-xs font-black text-rose-300 ml-1">件</span>
+            </div>
+          </div>
+        </div>
+        <div className="bg-amber-50 border border-amber-100 rounded-2xl p-4">
+          <div className="text-[10px] font-black text-amber-500 uppercase tracking-widest mb-2">単価不一致</div>
+          <div className="flex items-end gap-5">
+            <div>
+              <span className="text-3xl font-black text-amber-600">{mismatchItems.length.toLocaleString()}</span>
+              <span className="text-xs font-black text-amber-400 ml-1">品番</span>
+            </div>
+            <div className="pb-0.5">
+              <span className="text-xl font-black text-amber-400">{mismatchItems.reduce((s, r) => s + r.count, 0).toLocaleString()}</span>
+              <span className="text-xs font-black text-amber-300 ml-1">件</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* セクション切り替え + 検索 + CSV */}
+      <div className="flex flex-wrap gap-3 items-center">
+        <div className="flex rounded-2xl overflow-hidden border border-slate-200 shadow-sm">
+          <button onClick={() => { setSection('missing'); setSortKey(null); setDrillLease(null); setSearch(''); }}
+            className={`px-5 py-2.5 text-sm font-black transition-all ${
+              section === 'missing' ? 'bg-rose-500 text-white' : 'bg-white text-slate-600 hover:bg-rose-50'
+            }`}>
+            タブ価格未設定品番
+          </button>
+          <button onClick={() => { setSection('mismatch'); setSortKey(null); setDrillLease(null); setSearch(''); }}
+            className={`px-5 py-2.5 text-sm font-black transition-all ${
+              section === 'mismatch' ? 'bg-amber-500 text-white' : 'bg-white text-slate-600 hover:bg-amber-50'
+            }`}>
+            単価不一致
+          </button>
+        </div>
+
+        <div className="flex items-center gap-2 bg-white border border-slate-200 rounded-2xl px-3 py-2 flex-1 min-w-[200px] max-w-xs shadow-sm">
+          <Search size={14} className="text-slate-400 flex-shrink-0" />
+          <input
+            type="text"
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            placeholder="品番・商品名・リース会社を検索"
+            className="flex-1 text-xs font-bold text-slate-700 bg-transparent outline-none placeholder:text-slate-300"
+          />
+        </div>
+
+        <button onClick={handleExportCsv}
+          className="flex items-center gap-2 px-4 py-2.5 rounded-2xl bg-slate-700 text-white text-xs font-black hover:bg-emerald-600 transition-colors shadow-sm">
+          <FileSpreadsheet size={14} />
+          CSV出力
+        </button>
+      </div>
+
+      {/* テーブル */}
+      <div className="bg-white rounded-3xl shadow-sm border border-slate-100 overflow-hidden">
+        {tabLoading ? (
+          <div className="flex items-center justify-center gap-3 py-16 text-slate-400 font-bold">
+            <Loader2 size={20} className="animate-spin" />
+            タブ価格データを読み込み中...
+          </div>
+        ) : !drillLease ? (
+          /* ===== 第1階層: リース会社サマリー ===== */
+          currentItems.length === 0 ? (
+            <div className="py-16 text-center text-slate-400 font-bold text-sm">
+              <CheckCircle2 size={32} className="mx-auto mb-3 text-emerald-400" />
+              {section === 'missing' ? '未設定品番はありません' : '単価不一致はありません'}
+            </div>
+          ) : (
+            <>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-slate-100 bg-slate-50">
+                      {[
+                        ['leaseCompany', 'リース会社'],
+                        ['codeCount',   '品番数'],
+                        ['totalCount',  '件数'],
+                      ].map(([k, label]) => (
+                        <th key={k} onClick={() => handleSort(k)}
+                          className="px-4 py-3 text-left text-[10px] font-black text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-600 whitespace-nowrap">
+                          {label}<SortIcon k={k} />
+                        </th>
+                      ))}
+                      <th className="px-4 py-3" />
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {sorted.map((r, i) => (
+                      <tr key={i}
+                        onClick={() => handleDrillIn(r.leaseCompany)}
+                        className={`border-b border-slate-50 cursor-pointer transition-colors ${
+                          section === 'missing' ? 'hover:bg-rose-50/60' : 'hover:bg-amber-50/60'
+                        }`}>
+                        <td className="px-4 py-4 font-black text-slate-800 text-sm">{r.leaseCompany}</td>
+                        <td className="px-4 py-4 font-mono font-black text-right">
+                          <span className={`text-lg ${section === 'missing' ? 'text-rose-600' : 'text-amber-600'}`}>
+                            {r.codeCount.toLocaleString()}
+                          </span>
+                          <span className="text-[10px] text-slate-400 ml-1">品番</span>
+                        </td>
+                        <td className="px-4 py-4 font-mono font-bold text-slate-600 text-right text-sm">
+                          {r.totalCount.toLocaleString()}
+                          <span className="text-[10px] text-slate-400 ml-1">件</span>
+                        </td>
+                        <td className="px-4 py-4 text-slate-300 text-right">
+                          <ChevronRight size={16} />
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <div className="p-4 border-t border-slate-100 text-xs text-slate-400 font-bold text-right">
+                {leaseSummary.length} 社 / 全 {currentItems.length.toLocaleString()} 品番
+              </div>
+            </>
+          )
+        ) : (
+          /* ===== 第2階層: 品番ドリルダウン ===== */
+          <>
+            {/* パンくず */}
+            <div className="px-4 py-3 border-b border-slate-100 bg-slate-50 flex items-center gap-3">
+              <button onClick={handleDrillOut}
+                className="flex items-center gap-1 text-xs font-black text-slate-500 hover:text-emerald-600 transition-colors">
+                <ChevronRight size={14} className="rotate-180" /> 一覧に戻る
+              </button>
+              <span className="text-slate-300">|</span>
+              <span className={`font-black text-sm ${section === 'missing' ? 'text-rose-600' : 'text-amber-600'}`}>
+                {drillLease}
+              </span>
+              <span className="text-xs text-slate-400 font-bold">
+                {drillItems.length} 品番 / {drillItems.reduce((s, r) => s + r.count, 0).toLocaleString()} 件
+              </span>
+            </div>
+            {sorted.length === 0 ? (
+              <div className="py-12 text-center text-slate-400 font-bold text-sm">該当なし</div>
+            ) : section === 'missing' ? (
+              <>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b border-slate-100 bg-slate-50">
+                        {[
+                          ['productCode',   '品番'],
+                          ['productName',   '商品名'],
+                          ['item',          '分析名(大)'],
+                          ['count',         '件数'],
+                          ['latestDateVal', '最終売上年月'],
+                        ].map(([k, label]) => (
+                          <th key={k} onClick={() => handleSort(k)}
+                            className="px-4 py-3 text-left text-[10px] font-black text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-600 whitespace-nowrap">
+                            {label}<SortIcon k={k} />
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {sorted.map((r, i) => (
+                        <tr key={i} className="border-b border-slate-50 hover:bg-rose-50/40 transition-colors">
+                          <td className="px-4 py-3 font-mono font-bold text-slate-800 text-xs whitespace-nowrap">{r.productCode}</td>
+                          <td className="px-4 py-3 text-slate-600 text-xs max-w-[200px] truncate">{r.productName}</td>
+                          <td className="px-4 py-3 text-xs">
+                            <span className="px-2 py-0.5 rounded-lg bg-slate-100 text-slate-600 font-bold text-[10px] whitespace-nowrap">{r.item}</span>
+                          </td>
+                          <td className="px-4 py-3 font-mono font-bold text-slate-600 text-right text-xs">{r.count.toLocaleString()}</td>
+                          <td className="px-4 py-3 font-mono text-slate-500 text-right text-xs whitespace-nowrap">
+                            {r.latestYear && r.latestMonth ? `${r.latestYear}年${r.latestMonth}月` : '—'}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b border-slate-100 bg-slate-50">
+                        {[
+                          ['productCode',  '品番'],
+                          ['productName',  '商品名'],
+                          ['item',         '分析名(大)'],
+                          ['tabPrice',     'TAB価格'],
+                          ['actualPrice',  '実売単価'],
+                          ['diff',         '差額'],
+                          ['count',        '件数'],
+                        ].map(([k, label]) => (
+                          <th key={k} onClick={() => handleSort(k)}
+                            className="px-4 py-3 text-left text-[10px] font-black text-slate-400 uppercase tracking-widest cursor-pointer hover:text-slate-600 whitespace-nowrap">
+                            {label}<SortIcon k={k} />
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {sorted.map((r, i) => {
+                        const diffNeg = r.diff < 0;
+                        return (
+                          <tr key={i} className="border-b border-slate-50 hover:bg-amber-50/40 transition-colors">
+                            <td className="px-4 py-3 font-mono font-bold text-slate-800 text-xs whitespace-nowrap">{r.productCode}</td>
+                            <td className="px-4 py-3 text-slate-600 text-xs max-w-[200px] truncate">{r.productName}</td>
+                            <td className="px-4 py-3 text-xs">
+                              <span className="px-2 py-0.5 rounded-lg bg-slate-100 text-slate-600 font-bold text-[10px] whitespace-nowrap">{r.item}</span>
+                            </td>
+                            <td className="px-4 py-3 font-mono font-bold text-emerald-700 text-right text-xs whitespace-nowrap">{fmtYen(r.tabPrice)}</td>
+                            <td className="px-4 py-3 font-mono font-bold text-slate-700 text-right text-xs whitespace-nowrap">{fmtYen(r.actualPrice)}</td>
+                            <td className={`px-4 py-3 font-mono font-bold text-right text-xs whitespace-nowrap ${diffNeg ? 'text-rose-600' : 'text-amber-600'}`}>
+                              {r.diff > 0 ? '+' : ''}{fmtYen(r.diff)}
+                            </td>
+                            <td className="px-4 py-3 font-mono font-bold text-slate-600 text-right text-xs">{r.count.toLocaleString()}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            )}
+            <div className="p-4 border-t border-slate-100 text-xs text-slate-400 font-bold text-right">
+              {sorted.length.toLocaleString()} 品番表示
+              {search && `（"${search}" で絞り込み中）`}
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+};
 
 // ===== 粗利収支分析ビュー =====
 
