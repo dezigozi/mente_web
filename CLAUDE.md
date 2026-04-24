@@ -47,7 +47,7 @@ src/
 ```
 CSV → csvLoader.js → rawData（rows[]）
         ↓
-rowsInMonth         ← filterRowsInMonthRange（月範囲だけ・全行1周）
+rowsInMonth         ← filterRowsInMonthRange（月範囲だけ・全行1周。行は `address1`＝住所１列を持つ）
         ↓
 filteredRows        ← リース・得意先（Set。rowsInMonth 上を追加周回のみ）
         ↓

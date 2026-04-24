@@ -31,7 +31,7 @@ import {
   generateDetailCsvContent, calcYoY, formatCurrencyFull,
 } from './utils/aggregator';
 
-const CACHE_KEY = 'maint_report_data_v6';
+const CACHE_KEY = 'maint_report_data_v7';
 
 const ALLOWED_ITEMS = ['オルタネーター', 'スターター', 'コンプレッサー', 'エアコン関連'];
 // NFKC正規化：半角カナ→全角カナ、全角英数→半角英数 に統一して比較
@@ -88,7 +88,7 @@ const BFactoryMultiSelect = ({
                     onChange={() => onToggle(s)}
                     onClick={e => e.stopPropagation()}
                   />
-                  <span className="text-left break-all">{s}</span>
+                  <span className="text-left break-all font-bold text-slate-800">{s}</span>
                 </label>
               </li>
             );
@@ -213,6 +213,8 @@ const App = () => {
 
   /** メンテ(リース)複数。空＝全件 */
   const [selectedLeases, setSelectedLeases] = useState([]);
+  /** 分類（分析名(大)）ALLOWED_ITEMS からの複数。空＝4分類すべて（パターンAのUIのみ。パイプラインはA/B共通で適用） */
+  const [selectedItemCategories, setSelectedItemCategories] = useState([]);
   /** 得意先名(列E)複数。空＝全件 */
   const [selectedOrderClients, setSelectedOrderClients] = useState([]);
   const [orderClientQuery, setOrderClientQuery] = useState('');
@@ -275,8 +277,29 @@ const App = () => {
       setConnectionStatus('online');
     } catch (err) {
       console.error('データ読み込みエラー:', err);
-      setLoadError('CSVファイルの読み込みに失敗しました。public/data/master_data.csv を確認してください。');
-      setConnectionStatus('offline');
+      // オフライン・配信欠け時: IndexedDB にキャッシュがあれば前回データを表示（赤エラーは出さない）
+      let recovered = false;
+      try {
+        const fromStore = await getCache(CACHE_KEY);
+        if (fromStore?.data?.rows?.length) {
+          const ageMin = Math.floor((Date.now() - fromStore.timestamp) / 60000);
+          setRawData({
+            ...fromStore.data,
+            fromCache: true,
+            cacheAgeMsg: `${ageMin}分前（最新CSV取得失敗。キャッシュ表示。master_data 配置を確認）`,
+          });
+          setLoadError(null);
+          setConnectionStatus('online');
+          recovered = true;
+        }
+      } catch (_) { /* noop */ }
+      if (!recovered) {
+        const reason = err instanceof Error ? err.message : String(err);
+        setLoadError(
+          `CSVの読み込みに失敗しました。本番では public/data/master_data.csv をデプロイに含め、ローカルは「npm run dev」で起動（file:// 不可）してください。詳細: ${reason}`
+        );
+        setConnectionStatus('offline');
+      }
     } finally {
       setIsLoading(false);
       setLoadingProgress({ fetchMsg: '', isSyncing: false });
@@ -316,14 +339,47 @@ const App = () => {
     });
   }, [rowsInMonth, selectedLeases, selectedOrderClients]);
 
-  // ダッシュ用：分析名(大)白／ALLOWED_ITEMS 相当のみ（norm は行ごと1回）
+  // ダッシュ用：分析名(大)白／ALLOWED_ITEMS 相当のみ。分類の複数選択は空＝4分類すべて
   const dashboardRows = useMemo(
-    () => filteredRows.filter((r) => {
-      const it = r.item;
-      return it && ALLOWED_ITEM_NORM_SET.has(norm(it));
-    }),
-    [filteredRows]
+    () => {
+      const itemNormSet = selectedItemCategories.length
+        ? new Set(selectedItemCategories.map((x) => norm(x)))
+        : null;
+      return filteredRows.filter((r) => {
+        const it = r.item;
+        if (!it || !ALLOWED_ITEM_NORM_SET.has(norm(it))) return false;
+        if (itemNormSet && !itemNormSet.has(norm(it))) return false;
+        return true;
+      });
+    },
+    [filteredRows, selectedItemCategories]
   );
+
+  /** 工場名 → 住所１（工場トップ階層の一覧セル専用） */
+  const factoryAddressByBranch = useMemo(() => {
+    const m = new Map();
+    for (const r of dashboardRows) {
+      const k = r.branchCompany || r.branch;
+      if (!k || k === '(未分類)') continue;
+      const a = (r.address1 || '').trim();
+      if (!a) continue;
+      if (!m.has(k)) m.set(k, a);
+    }
+    return m;
+  }, [dashboardRows]);
+
+  /** 工場名 → 宅配先電話（トップ階層の一覧表示・コピー用。先出1件） */
+  const factoryPhoneByBranch = useMemo(() => {
+    const m = new Map();
+    for (const r of dashboardRows) {
+      const k = r.branchCompany || r.branch;
+      if (!k || k === '(未分類)') continue;
+      const p = (r.deliveryPhone || '').trim();
+      if (!p) continue;
+      if (!m.has(k)) m.set(k, p);
+    }
+    return m;
+  }, [dashboardRows]);
 
   useEffect(() => {
     if (viewMode !== 'B') {
@@ -488,7 +544,7 @@ const App = () => {
   }, [bSourceRows, years, activeView, viewMode, viewBVariant]);
 
   // viewが変わるたびにチェック状態をリセット
-  const viewKey = `${viewMode}|${viewBVariant}|${bFactoryQuery}|${[...bFactorySelected].sort().join('¦')}|${bSearchPhone}|${bSearchPref}|${[...selectedLeases].sort().join('¦')}|${[...selectedOrderClients].sort().join('¦')}|${activeView.leaseCo}|${activeView.branch}|${activeView.item}|${activeView.orderer ?? ''}`;
+  const viewKey = `${viewMode}|${viewBVariant}|${bFactoryQuery}|${[...bFactorySelected].sort().join('¦')}|${bSearchPhone}|${bSearchPref}|${[...selectedLeases].sort().join('¦')}|${[...selectedItemCategories].sort().join('¦')}|${[...selectedOrderClients].sort().join('¦')}|${activeView.leaseCo}|${activeView.branch}|${activeView.item}|${activeView.orderer ?? ''}`;
   useEffect(() => {
     if (!currentTableData.length) return;
     setCheckedItems(new Set(currentTableData.map(d => d.name)));
@@ -504,11 +560,12 @@ const App = () => {
     if (!currentTableData.length || !years.length) return null;
     const filtered = currentTableData.filter(d => checkedItems.has(d.name));
     if (!filtered.length) return null;
-    const profit = {}, quantity = {};
-    years.forEach(y => { profit[y] = 0; quantity[y] = 0; });
+    const profit = {}, quantity = {}, sales = {};
+    years.forEach(y => { profit[y] = 0; quantity[y] = 0; sales[y] = 0; });
     filtered.forEach(d => years.forEach(y => {
       profit[y]   += d.profit[y]   || 0;
       quantity[y] += d.quantity[y] || 0;
+      sales[y]     += d.sales?.[y]  || 0;
     }));
     const { leaseCo, branch, item } = activeView;
     let label = '全体 合計';
@@ -523,7 +580,7 @@ const App = () => {
         else if (branch !== null) label = `${branch} 合計`;
       }
     }
-    return { name: label, profit, quantity };
+    return { name: label, profit, quantity, sales };
   }, [currentTableData, years, activeView, checkedItems, viewMode, viewBVariant]);
 
   const handleDrillDown = useCallback((row) => {
@@ -580,6 +637,10 @@ const App = () => {
     });
     const allowedNorm = ALLOWED_ITEMS.map(norm);
     rows = rows.filter(r => allowedNorm.includes(norm(r.item)));
+    if (selectedItemCategories.length > 0) {
+      const s = new Set(selectedItemCategories.map((x) => norm(x)));
+      rows = rows.filter((r) => s.has(norm(r.item || '')));
+    }
     if (viewMode === 'B') {
       rows = applyBFactorySearchFilters(rows, {
         factoryNames: bFactorySelected, phone: bSearchPhone, pref: bSearchPref,
@@ -953,6 +1014,61 @@ const App = () => {
                   <span className="text-[10px] font-bold text-slate-500">{selectedLeases.length}社選択中</span>
                 )}
               </div>
+              {viewMode === 'A' && (
+                <div className="mt-2 pt-2 border-t border-slate-100 w-full max-w-5xl">
+                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] ml-0.5 mb-1.5 block">
+                    分類（分析名(大)）絞り込み
+                  </label>
+                  <div className="flex gap-2 flex-wrap items-center">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        startTransition(() => {
+                          setSelectedItemCategories([]);
+                          setActiveView({ leaseCo: null, branch: null, item: null, orderClient: null, orderer: null });
+                        });
+                      }}
+                      className={`px-4 py-2 rounded-2xl text-xs font-black transition-all duration-300 ${
+                        selectedItemCategories.length === 0
+                          ? 'bg-emerald-600 text-white shadow-xl shadow-emerald-200'
+                          : 'bg-slate-100 text-slate-400 hover:bg-slate-200'
+                      }`}
+                    >
+                      すべて
+                    </button>
+                    {ALLOWED_ITEMS.map((cat) => {
+                      const on = selectedItemCategories.includes(cat);
+                      return (
+                        <button
+                          key={cat}
+                          type="button"
+                          onClick={() => {
+                            startTransition(() => {
+                              setSelectedItemCategories((prev) => {
+                                if (prev.includes(cat)) return prev.filter((c) => c !== cat);
+                                return [...prev, cat];
+                              });
+                              setActiveView({ leaseCo: null, branch: null, item: null, orderClient: null, orderer: null });
+                            });
+                          }}
+                          className={`px-4 py-2 rounded-2xl text-xs font-black transition-all duration-300 ${
+                            on
+                              ? 'bg-emerald-600 text-white shadow-xl shadow-emerald-200'
+                              : 'bg-slate-100 text-slate-400 hover:bg-slate-200'
+                          }`}
+                        >
+                          {cat}
+                        </button>
+                      );
+                    })}
+                    {selectedItemCategories.length > 0 && (
+                      <span className="text-[10px] font-bold text-slate-500">
+                        {selectedItemCategories.length}分類選択中
+                      </span>
+                    )}
+                  </div>
+                </div>
+              )}
               {orderClientOptions.length > 0 && (
                 <div className="mt-2 pt-2 border-t border-slate-100 w-full max-w-4xl">
                   <div className="text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] ml-0.5 mb-1.5">
@@ -1099,6 +1215,8 @@ const App = () => {
             amountUnit={amountUnit}
             showProfit={showProfit && viewMode === 'A'}
             totalRow={totalRow}
+            factoryAddressByBranch={factoryAddressByBranch}
+            factoryPhoneByBranch={factoryPhoneByBranch}
           />
         )}
         {rawData && !isLoading && reportMode === 'margin' && (
@@ -1147,6 +1265,8 @@ const LoadingScreen = () => (
 const DashboardView = memo(({
   data, years, activeView, viewMode, viewBVariant, isLeafLevel, checkedItems, onCheckedChange,
   onDrillDown, onNavigateTo, onSavePdf, onSaveCsv, fmtAmt, amountUnit, showProfit, totalRow,
+  factoryAddressByBranch = new Map(),
+  factoryPhoneByBranch = new Map(),
 }) => {
   const toggleCheck = useCallback((name) => {
     onCheckedChange(prev => {
@@ -1158,6 +1278,11 @@ const DashboardView = memo(({
 
   const { leaseCo, branch, item } = activeView;
   const emptyView = { leaseCo: null, branch: null, item: null, orderClient: null, orderer: null };
+
+  const formatMarginRate = (p, s) => {
+    if (s == null || s === 0) return '—';
+    return `${((p / s) * 100).toFixed(1)}%`;
+  };
 
   // 現在のレベルに応じたラベルを決定
   let levelLabel, levelTitle;
@@ -1271,8 +1396,10 @@ const DashboardView = memo(({
               </span>
             ) : (
               <button
+                type="button"
                 onClick={crumb.onClick}
-                className="flex items-center gap-1 text-slate-400 hover:text-slate-600 transition-colors">
+                className="flex items-center gap-1 text-slate-400 hover:text-slate-600 transition-colors"
+              >
                 {crumb.icon} {crumb.label}
               </button>
             )}
@@ -1295,10 +1422,12 @@ const DashboardView = memo(({
       {/* Table */}
       <div className="bg-white rounded-3xl md:rounded-[3rem] shadow-sm border border-slate-100 overflow-hidden">
         <div className="p-4 md:p-8 border-b border-slate-50 flex flex-col md:flex-row md:justify-between md:items-center gap-3 bg-green-50/30">
-          <h3 className="font-black text-slate-800 text-base md:text-xl flex items-center gap-2">
+          <h3 className="font-black text-slate-800 text-base md:text-xl flex items-center gap-2 min-w-0 max-w-4xl flex-wrap">
             <Tag className="text-emerald-500 flex-shrink-0" />
-            {levelTitle}
-            {amountUnit === 'thousand' && showProfit && <span className="ml-1 text-emerald-500 text-sm">（千円）</span>}
+            <span className="leading-snug break-words">{levelTitle}</span>
+            {amountUnit === 'thousand' && (showProfit || viewMode === 'A') && (
+              <span className="text-emerald-500 text-sm">（千円）</span>
+            )}
           </h3>
           <div className="flex items-center gap-3 flex-wrap">
             <div className="text-xs font-bold text-slate-400 flex items-center gap-1.5">
@@ -1345,8 +1474,10 @@ const DashboardView = memo(({
                   {years.map((year, yIdx) => {
                     const p = totalRow.profit[year]   || 0;
                     const q = totalRow.quantity[year] || 0;
+                    const s = totalRow.sales?.[year]  || 0;
                     const yoy = years[yIdx-1] ? calcYoY(p, totalRow.profit[years[yIdx-1]])   : null;
                     const qoy = years[yIdx-1] ? calcYoY(q, totalRow.quantity[years[yIdx-1]]) : null;
+                    const soy = years[yIdx-1] ? calcYoY(s, totalRow.sales?.[years[yIdx-1]] ?? 0) : null;
                     return (
                       <td key={year} className="px-2 md:px-6 py-4 border-l border-emerald-200">
                         <div className="space-y-2">
@@ -1361,6 +1492,19 @@ const DashboardView = memo(({
                               )}
                             </div>
                           </div>
+                          {viewMode === 'A' && (
+                            <div className="flex justify-between items-baseline">
+                              <span className="text-[10px] font-black text-sky-600">売上</span>
+                              <div className="text-right">
+                                <div className="font-mono font-black text-slate-800 text-xs md:text-base">{fmtAmt(s)}</div>
+                                {soy !== null && (
+                                  <div className={`text-[10px] font-black flex items-center justify-end gap-0.5 ${parseFloat(soy) >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
+                                    {parseFloat(soy) >= 0 ? <ArrowUpRight size={10} /> : <ArrowDownRight size={10} />}{soy}%
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          )}
                           {showProfit && (
                             <div className="flex justify-between items-baseline">
                               <span className="text-[10px] font-black text-emerald-500">粗利</span>
@@ -1371,6 +1515,16 @@ const DashboardView = memo(({
                                     {parseFloat(yoy) >= 0 ? <ArrowUpRight size={10} /> : <ArrowDownRight size={10} />}{yoy}%
                                   </div>
                                 )}
+                              </div>
+                            </div>
+                          )}
+                          {viewMode === 'A' && (
+                            <div className="flex justify-between items-baseline">
+                              <span className="text-[10px] font-black text-amber-700">粗利率</span>
+                              <div className="text-right">
+                                <div className="font-mono font-black text-amber-800 text-xs md:text-base tabular-nums">
+                                  {formatMarginRate(p, s)}
+                                </div>
                               </div>
                             </div>
                           )}
@@ -1407,6 +1561,22 @@ const DashboardView = memo(({
                           <ChevronRight size={14} className="opacity-0 group-hover:opacity-100 transition-all -translate-x-2 group-hover:translate-x-0" />
                         )}
                       </div>
+                      {viewMode === 'B' && branch === null
+                        && ((factoryAddressByBranch.get(row.name) || '').trim() || (factoryPhoneByBranch.get(row.name) || '').trim()) ? (
+                        <div
+                          className="mt-1 flex flex-wrap items-baseline gap-x-2 gap-y-0.5 max-w-3xl text-xs font-bold text-slate-500"
+                          onMouseDown={e => e.stopPropagation()}
+                        >
+                          {(factoryAddressByBranch.get(row.name) || '').trim() ? (
+                            <span className="break-words">{(factoryAddressByBranch.get(row.name) || '').trim()}</span>
+                          ) : null}
+                          {(factoryPhoneByBranch.get(row.name) || '').trim() ? (
+                            <span className="text-slate-600 select-text">
+                              TEL: {(factoryPhoneByBranch.get(row.name) || '').trim()}
+                            </span>
+                          ) : null}
+                        </div>
+                      ) : null}
                       {!isLeafLevel && (
                         <div className="text-[10px] font-bold text-slate-400 mt-1 uppercase tracking-tighter no-print">
                           クリックでドリルダウン
@@ -1416,8 +1586,10 @@ const DashboardView = memo(({
                     {years.map((year, yIdx) => {
                       const p = row.profit[year]   || 0;
                       const q = row.quantity[year] || 0;
+                      const s = row.sales?.[year]  || 0;
                       const yoy = years[yIdx-1] ? calcYoY(p, row.profit[years[yIdx-1]])   : null;
                       const qoy = years[yIdx-1] ? calcYoY(q, row.quantity[years[yIdx-1]]) : null;
+                      const soy = years[yIdx-1] ? calcYoY(s, row.sales?.[years[yIdx-1]] ?? 0) : null;
                       return (
                         <td key={year} className="px-2 md:px-6 py-4 border-l border-slate-300 group-hover:bg-white/50">
                           <div className="space-y-2">
@@ -1432,6 +1604,19 @@ const DashboardView = memo(({
                                 )}
                               </div>
                             </div>
+                            {viewMode === 'A' && (
+                              <div className="flex justify-between items-baseline">
+                                <span className="text-[10px] font-black text-sky-700">売上</span>
+                                <div className="text-right">
+                                  <div className="font-mono font-black text-slate-800 text-xs md:text-base">{fmtAmt(s)}</div>
+                                  {soy !== null && (
+                                    <div className={`text-[10px] font-black flex items-center justify-end gap-0.5 ${parseFloat(soy) >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
+                                      {parseFloat(soy) >= 0 ? <ArrowUpRight size={10} /> : <ArrowDownRight size={10} />}{soy}%
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                            )}
                             {showProfit && (
                               <div className="flex justify-between items-baseline">
                                 <span className="text-[10px] font-black text-slate-600">粗利</span>
@@ -1442,6 +1627,16 @@ const DashboardView = memo(({
                                       {parseFloat(yoy) >= 0 ? <ArrowUpRight size={10} /> : <ArrowDownRight size={10} />}{yoy}%
                                     </div>
                                   )}
+                                </div>
+                              </div>
+                            )}
+                            {viewMode === 'A' && (
+                              <div className="flex justify-between items-baseline">
+                                <span className="text-[10px] font-black text-amber-700">粗利率</span>
+                                <div className="text-right">
+                                  <div className="font-mono font-black text-amber-800 text-xs md:text-base tabular-nums">
+                                    {formatMarginRate(p, s)}
+                                  </div>
                                 </div>
                               </div>
                             )}

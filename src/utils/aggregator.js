@@ -1,6 +1,6 @@
 /**
  * データ集計ユーティリティ（メンテ実績レポート用）
- * profit（粗利）と quantity（受注数）のみ集計
+ * profit（粗利）・quantity（受注数）・sales（売上）を集計。粗利率は UI 側で profit/sales
  *
  * 月範囲の判定: rowInFiscalMonthRange / filterRowsInMonthRange は、UI 側で
  * 期間の全行1周だけに使う。filterRows() は従来どおり併用可（挙動は同じ月ロジック）。
@@ -64,12 +64,18 @@ function aggregateByField(rows, years, keyFn, { sortBy = 'profit' } = {}) {
   rows.forEach(row => {
     const key = keyFn(row) || '(未分類)';
     if (!map[key]) {
-      map[key] = { name: key, profit: {}, quantity: {} };
-      years.forEach(y => { map[key].profit[y] = 0; map[key].quantity[y] = 0; });
+      map[key] = { name: key, profit: {}, quantity: {}, sales: {} };
+      years.forEach(y => {
+        map[key].profit[y] = 0;
+        map[key].quantity[y] = 0;
+        map[key].sales[y] = 0;
+      });
     }
     if (row.fiscalYear && years.includes(row.fiscalYear)) {
-      map[key].profit[row.fiscalYear]   += row.profit   || 0;
-      map[key].quantity[row.fiscalYear] += row.quantity || 0;
+      const fy = row.fiscalYear;
+      map[key].profit[fy]   += row.profit   || 0;
+      map[key].quantity[fy] += row.quantity || 0;
+      map[key].sales[fy]    += row.sales     || 0;
     }
   });
   return Object.values(map).sort((a, b) => {

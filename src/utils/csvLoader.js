@@ -159,10 +159,17 @@ export function generateFullDataCsvContent(headers, rows) {
   return out.join('\r\n');
 }
 
+/** サブパス配信（Vite `base`）でも public を正しく指す */
+function masterCsvUrl() {
+  const b = import.meta.env.BASE_URL || '/';
+  const path = b.endsWith('/') ? `${b}data/master_data.csv` : `${b}/data/master_data.csv`;
+  return path;
+}
+
 export async function loadCsvData() {
-  const response = await fetch('/data/master_data.csv');
+  const response = await fetch(masterCsvUrl());
   if (!response.ok) {
-    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    throw new Error(`HTTP ${response.status}: ${response.statusText}（${masterCsvUrl()}）`);
   }
   const csv = await response.text();
   return parseCsv(csv);
@@ -329,6 +336,8 @@ function parseCsv(csv) {
       orderClient,
       branch,
       branchCompany,
+      /** 住所１列（都道府県＋以降。工場名横表示用） */
+      address1: address1 || '',
       /** 送り先の宅配先電話（表示・絞り込み用。数字正規化は phoneSearchStr） */
       deliveryPhone: phone || '',
       phoneSearchStr,
