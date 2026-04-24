@@ -370,32 +370,77 @@ function parseCsv(csv) {
 }
 
 /**
- * 日付パース: テキスト形式 or Excelシリアル番号 → { fiscalYear, month }
+ * カレンダー年月 → 会計年度用の { fiscalYear, month }（4月始まり、月は 1〜12）
+ * 1–3 月は fiscalYear = 前年度。
+ * @param {number} y 西暦
+ * @param {number} m 月
+ */
+function fiscalYearMonthFromCalendar(y, m) {
+  if (m < 1 || m > 12 || y < 1000 || y > 3000) return null;
+  return { fiscalYear: m >= 4 ? y : y - 1, month: m };
+}
+
+/**
+ * 納品日（B列想定）を { fiscalYear, month } に変換する。
+ *
+ * 【不具合の例】以前は文字列 "2023" だけのセルが、後段で `parseFloat` され
+ * 数値 2023 = Excel 日目（1900-01-01 から 2023 日後）と解釈され、画面上に
+ * 「1905年度」のような偽の年度列が出ていた（マスタ上は B 列に 1900年代が無いのに
+ * 集計される）。
+ *
+ * 【方針】
+ * 1) 4桁の年単独・"2023.0" 風の表記は「会計上の年」として 4 月扱いで採用。
+ * 2) YYYY/M/D および M/D/YYYY を分岐。
+ * 3) どうしても純粋数値の Excel シリアルにする場合のみ 1900 年起点計算。変換後の
+ *    西暦が 1980 未満なら不採用（上記誤解釈の 1900年代を落とす）。納品実務上の下限。
  */
 function parseDate(dateValue) {
+  if (dateValue == null || String(dateValue).trim() === '') return null;
+
   if (typeof dateValue === 'string' && dateValue) {
-    const datePart = dateValue.split(' ')[0];
+    const datePart = dateValue.split(' ')[0].trim();
+    // CSV が年だけ "2023" のとき: Excel 日目扱いに回さない（＝ 1900年代年度バグの根）
+    if (/^\d{4}$/.test(datePart)) {
+      const y = Number(datePart);
+      if (y >= 1980 && y <= 2100) {
+        // 月不明のため会計上「その年の 4 月」扱い（4 月始まり会計用の代表月）
+        return fiscalYearMonthFromCalendar(y, 4);
+      }
+    }
     const parts = datePart.split(/[-\/]/).map(Number);
     if (parts.length === 3) {
-      const [year, month] = parts;
-      if (year > 1900 && month >= 1 && month <= 12) {
-        return { fiscalYear: month >= 4 ? year : year - 1, month };
+      const [a, b, c] = parts;
+      if (a > 1900 && a < 3000 && b >= 1 && b <= 12) {
+        // 日本式: 2023/4/1 または 2023-4-1
+        return fiscalYearMonthFromCalendar(a, b);
+      }
+      if (c > 1900 && c < 3000 && a >= 1 && a <= 12 && b >= 1 && b <= 31) {
+        // 4/1/2023 形式（英ロケのエクスポート用）
+        return fiscalYearMonthFromCalendar(c, a);
       }
     }
   }
 
-  const num = typeof dateValue === 'number' ? dateValue : parseFloat(dateValue);
-  if (!isNaN(num) && num > 0) {
-    const excelEpoch = new Date(1900, 0, -1);
-    const date = new Date(excelEpoch.getTime() + num * 86400000);
-    const year = date.getFullYear();
-    const month = date.getMonth() + 1;
-    if (month >= 1 && month <= 12) {
-      return { fiscalYear: month >= 4 ? year : year - 1, month };
+  const asStr = typeof dateValue === 'string' ? dateValue.trim() : null;
+  const num = typeof dateValue === 'number' ? dateValue : parseFloat(String(dateValue));
+  if (isNaN(num) || num <= 0) return null;
+
+  // Excel 数値セルが 2023 のように「年だけ」来たとき（".0" 付き含む）も日目扱いしない
+  if (asStr && /^\d{4}(?:\.0+)?$/.test(asStr.trim())) {
+    const intY = Math.round(num);
+    if (intY >= 1980 && intY <= 2100 && Math.abs(num - intY) < 1e-6) {
+      return fiscalYearMonthFromCalendar(intY, 4);
     }
   }
 
-  return null;
+  // ここまで来た純粋数値は Excel シリアル（例: エクスポートで日付が数値のみ）とみなす
+  const excelEpoch = new Date(1900, 0, -1);
+  const date = new Date(excelEpoch.getTime() + num * 86400000);
+  const y = date.getFullYear();
+  const m = date.getMonth() + 1;
+  if (m < 1 || m > 12) return null;
+  if (y < 1980 || y > 2100) return null; // 誤パースで出た 1900年代を捨てる
+  return fiscalYearMonthFromCalendar(y, m);
 }
 
 function parseCSVLine(line) {
