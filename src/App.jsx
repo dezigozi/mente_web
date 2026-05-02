@@ -1945,7 +1945,7 @@ const TabPriceView = ({ rows, leaseCompanies }) => {
         }
         if (tabEntry !== undefined) continue;
         lines.push([
-          r.slipNo, r.date, r.leaseCompany, '',
+          r.slipNo, r.date, r.leaseCompany, r.makerCode,
           r.productCode, r.productName, r.item, r.receiverName,
           r.unitPrice, r.quantity, Math.round(r.sales - r.profit), '', '', '',
         ].map(esc).join(','));

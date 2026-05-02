@@ -194,6 +194,7 @@ function parseCsv(csv) {
   const COL_PHONE  = idx['宅配先電話番号'] ?? 11;
   const COL_BRANCH = idx['送り先名']      ?? 12;
   const COL_ADDR1  = idx['住所１']        ?? 14;
+  const COL_MAKER  = idx['メーカーコード'] ?? 17;
   const COL_CODE   = idx['品番']          ?? 31;
   const COL_NAME   = idx['商品名']        ?? 32;
   const COL_ITEM   = idx['分析名(大)']    ?? 33;
@@ -351,6 +352,7 @@ function parseCsv(csv) {
       slipNo:       vals[COL_SLIP]?.trim()      || '',
       slipType:     vals[COL_SLIP_TYPE]?.trim() || '',
       receiverName: vals[COL_RECV_NAME]?.trim() || '',
+      makerCode:    vals[COL_MAKER]?.trim()     || '',
       unitPrice,
       quantity: qty,
       sales,
