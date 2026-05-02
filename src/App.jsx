@@ -1921,14 +1921,17 @@ const TabPriceView = ({ rows, leaseCompanies }) => {
     const isMissing = section === 'missing';
     const esc = v => { const s = v == null ? '' : String(v); return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
 
-    // 出力列: 売上伝票ＮＯ / 納品日 / リース会社 / メーカーコード / 品番 / 商品名 /
-    //         分析名(大) / 受注者名 / 単価 / 数量 / 原価 / TAB価格 / 差額 / 適用日
-    const headers = [
+    const headersMissing = [
+      '売上伝票ＮＯ', '納品日', 'リース会社', 'メーカーコード',
+      '分析名(大)', '品番', '商品名', '受注者名',
+      '単価', '数量', '原価', '粗利率', '粗利額',
+    ];
+    const headersMismatch = [
       '売上伝票ＮＯ', '納品日', 'リース会社', 'メーカーコード',
       '品番', '商品名', '分析名(大)', '受注者名',
       '単価', '数量', '原価', 'TAB価格', '差額', '適用日',
     ];
-    const lines = [headers.map(esc).join(',')];
+    const lines = [(isMissing ? headersMissing : headersMismatch).map(esc).join(',')];
 
     const sourceRows = isMissing ? leaseFilteredRows : periodFilteredRows;
     for (const r of sourceRows) {
@@ -1944,10 +1947,13 @@ const TabPriceView = ({ rows, leaseCompanies }) => {
           if (calYear * 100 + r.month < appDate.year * 100 + appDate.month) continue;
         }
         if (tabEntry !== undefined) continue;
+        const genka      = Math.round(r.sales - r.profit);
+        const grossRate  = r.sales > 0 ? (r.profit / r.sales * 100).toFixed(1) : '0.0';
+        const grossProfit = Math.round(r.profit);
         lines.push([
           r.slipNo, r.date, r.leaseCompany, r.makerCode,
-          r.productCode, r.productName, r.item, r.receiverName,
-          r.unitPrice, r.quantity, Math.round(r.sales - r.profit), '', '', '',
+          r.item, r.productCode, r.productName, r.receiverName,
+          r.unitPrice, r.quantity, genka, grossRate, grossProfit,
         ].map(esc).join(','));
       } else {
         // tab_data に存在し、単価が異なる行のみ
