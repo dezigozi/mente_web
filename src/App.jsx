@@ -1155,18 +1155,14 @@ const App = () => {
             <div className="space-y-3">
               <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] ml-2">期間指定</label>
               <div className="flex items-center gap-4 bg-slate-100 p-2 rounded-2xl">
-                <select value={monthRange.start} onChange={e => {
-                  startTransition(() => { setMonthRange(prev => ({ ...prev, start: e.target.value })); });
-                }}
+                <select value={monthRange.start} onChange={e => setMonthRange(prev => ({ ...prev, start: e.target.value }))}
                   className="bg-transparent border-none text-sm font-black px-4 py-1.5 focus:ring-0 text-slate-700 cursor-pointer">
-                  {[...Array(12)].map((_, i) => <option key={i+1} value={i+1}>{i+1}月</option>)}
+                  {[...Array(12)].map((_, i) => <option key={i+1} value={String(i+1)}>{i+1}月</option>)}
                 </select>
                 <div className="w-4 h-0.5 bg-slate-300 rounded-full" />
-                <select value={monthRange.end} onChange={e => {
-                  startTransition(() => { setMonthRange(prev => ({ ...prev, end: e.target.value })); });
-                }}
+                <select value={monthRange.end} onChange={e => setMonthRange(prev => ({ ...prev, end: e.target.value }))}
                   className="bg-transparent border-none text-sm font-black px-4 py-1.5 focus:ring-0 text-slate-700 cursor-pointer">
-                  {[...Array(12)].map((_, i) => <option key={i+1} value={i+1}>{i+1}月</option>)}
+                  {[...Array(12)].map((_, i) => <option key={i+1} value={String(i+1)}>{i+1}月</option>)}
                 </select>
               </div>
             </div>
