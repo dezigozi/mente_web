@@ -1922,11 +1922,11 @@ const TabPriceView = ({ rows, leaseCompanies }) => {
     const esc = v => { const s = v == null ? '' : String(v); return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
 
     // 出力列: 売上伝票ＮＯ / 納品日 / リース会社 / メーカーコード / 品番 / 商品名 /
-    //         分析名(大) / 受注者名 / 単価 / TAB価格 / 差額 / 適用日
+    //         分析名(大) / 受注者名 / 単価 / 数量 / 原価 / TAB価格 / 差額 / 適用日
     const headers = [
       '売上伝票ＮＯ', '納品日', 'リース会社', 'メーカーコード',
       '品番', '商品名', '分析名(大)', '受注者名',
-      '単価', 'TAB価格', '差額', '適用日',
+      '単価', '数量', '原価', 'TAB価格', '差額', '適用日',
     ];
     const lines = [headers.map(esc).join(',')];
 
@@ -1947,7 +1947,7 @@ const TabPriceView = ({ rows, leaseCompanies }) => {
         lines.push([
           r.slipNo, r.date, r.leaseCompany, '',
           r.productCode, r.productName, r.item, r.receiverName,
-          r.unitPrice, '', '', '',
+          r.unitPrice, r.quantity, Math.round(r.sales - r.profit), '', '', '',
         ].map(esc).join(','));
       } else {
         // tab_data に存在し、単価が異なる行のみ
@@ -1957,7 +1957,7 @@ const TabPriceView = ({ rows, leaseCompanies }) => {
         lines.push([
           r.slipNo, r.date, r.leaseCompany, tabEntry.makerCode,
           r.productCode, r.productName, r.item, r.receiverName,
-          r.unitPrice, tabPrice, r.unitPrice - tabPrice, tabEntry.dateStr,
+          r.unitPrice, r.quantity, Math.round(r.sales - r.profit), tabPrice, r.unitPrice - tabPrice, tabEntry.dateStr,
         ].map(esc).join(','));
       }
     }
