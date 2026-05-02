@@ -1944,7 +1944,7 @@ const TabPriceView = ({ rows, leaseCompanies }) => {
         }
         if (tabEntry !== undefined) continue;
         const genka      = Math.round(r.sales - r.profit);
-        const grossRate  = r.sales > 0 ? (r.profit / r.sales * 100).toFixed(1) : '0.0';
+        const grossRate  = r.sales > 0 ? (r.profit / r.sales).toFixed(3) : '0.000';
         const grossProfit = Math.round(r.profit);
         lines.push([
           r.slipNo, r.date, r.leaseCompany, r.makerCode,
