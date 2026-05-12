@@ -138,7 +138,7 @@ export function normalizeJapanPhoneDigits(phone) {
 
 /**
  * 現在の表示フィルタに合致した行を、元CSVのヘッダー＋全列のまま出力。
- * 末尾に「年」「月」「年月」（納品日ベース・マスタ読込時と同じ暦年／月）を付与する。
+ * 末尾に「年」「月」「年月」（納品日ベース・暦年／月。年月は「2026年3月」形式で Excel の日付化を避ける）を付与する。
  * @param {string[]} headers
  * @param {Array<{ rawRow?: string[], month?: number, year?: number, fiscalYear?: number }>} rows
  */

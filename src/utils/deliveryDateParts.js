@@ -1,5 +1,6 @@
 /**
- * 納品日パース済み行から暦の年・月・年月（YYYY-MM）を得る（CSV追記用）
+ * 納品日パース済み行から暦の年・月・年月を得る（CSV追記用）
+ * 年月は「2026年3月」形式（Excel が YYYY-MM を日付化して Apr-23 等になるのを避ける）
  * csvLoader と aggregator の両方から参照（循環 import を避けるため独立ファイル）
  * @param {{ year?: number|string, month?: number|string, fiscalYear?: number|string }} row
  * @returns {{ year: string, month: string, yearMonth: string }}
@@ -20,6 +21,6 @@ export function deliveryDateCalendarParts(row) {
   if (!Number.isFinite(yNum)) return { year: '', month: String(mNum), yearMonth: '' };
   const year = String(yNum);
   const month = String(mNum);
-  const yearMonth = `${yNum}-${String(mNum).padStart(2, '0')}`;
+  const yearMonth = `${yNum}年${mNum}月`;
   return { year, month, yearMonth };
 }

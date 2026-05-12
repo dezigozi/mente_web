@@ -236,7 +236,7 @@ export function aggregateByItem(rows, years, branchName) {
 }
 
 /**
- * 明細CSV生成（日付の次に納品日由来の年・月・年月を付与）
+ * 明細CSV生成（日付の次に納品日由来の年・月・年月を付与。年月は「2026年3月」形式）
  */
 export function generateDetailCsvContent(rows) {
   const q = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
