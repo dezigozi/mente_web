@@ -1,3 +1,5 @@
+import { deliveryDateCalendarParts } from './csvLoader.js';
+
 /**
  * データ集計ユーティリティ（メンテ実績レポート用）
  * profit（粗利）・quantity（受注数）・sales（売上）を集計。粗利率は UI 側で profit/sales
@@ -234,19 +236,23 @@ export function aggregateByItem(rows, years, branchName) {
 }
 
 /**
- * 明細CSV生成
+ * 明細CSV生成（日付の次に納品日由来の年・月・年月を付与）
  */
 export function generateDetailCsvContent(rows) {
   const q = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
-  const headers = ['メンテ', '部店', '注文者', 'アイテム', '日付', '受注数', '粗利'];
+  const headers = ['メンテ', '部店', '注文者', 'アイテム', '日付', '年', '月', '年月', '受注数', '粗利'];
   const lines = [headers.map(q).join(',')];
   rows.forEach(row => {
+    const { year, month, yearMonth } = deliveryDateCalendarParts(row);
     lines.push([
       q(row.leaseCompany ?? ''),
       q(row.branchCompany || row.branch || ''),
       q(row.orderer ?? ''),
       q(row.item ?? ''),
       q(row.date ?? ''),
+      q(year),
+      q(month),
+      q(yearMonth),
       row.quantity ?? 0,
       row.profit ?? 0,
     ].join(','));

@@ -31,7 +31,25 @@ import {
   generateDetailCsvContent, calcYoY, formatCurrencyFull,
 } from './utils/aggregator';
 
-const CACHE_KEY = 'maint_report_data_v10';
+const CACHE_KEY = 'maint_report_data_v11';
+
+/** 期間指定の開始月に合わせて行の fiscalYear を付け替え（kasouhin_uriage_Web と同ロジック） */
+function mapRowsWithFiscalYearStart(rows, startMonthStr) {
+  if (!rows?.length) return rows;
+  const sm = parseInt(String(startMonthStr), 10);
+  if (Number.isNaN(sm) || sm < 1 || sm > 12) return rows;
+  return rows.map((r) => {
+    const m = Number(r.month);
+    if (!m || m < 1 || m > 12) return r;
+    const CY =
+      r.year != null && r.year !== ''
+        ? Number(r.year)
+        : (m >= 4 ? Number(r.fiscalYear) : Number(r.fiscalYear) + 1);
+    if (Number.isNaN(CY)) return r;
+    const newFY = m >= sm ? CY : CY - 1;
+    return { ...r, fiscalYear: newFY };
+  });
+}
 
 const ALLOWED_ITEMS = ['オルタネーター', 'スターター', 'コンプレッサー', 'エアコン関連'];
 // NFKC正規化：半角カナ→全角カナ、全角英数→半角英数 に統一して比較
@@ -310,11 +328,13 @@ const App = () => {
 
   useEffect(() => {
     if (!rawData?.rows.length) return;
-    const maxFY = Math.max(...rawData.years);
-    const latestMonths = rawData.rows.filter(r => r.fiscalYear === maxFY).map(r => r.month);
+    const fys = rawData.rows.map((r) => r.fiscalYear).filter((x) => x != null && x !== '');
+    if (!fys.length) return;
+    const maxFY = Math.max(...fys);
+    const latestMonths = rawData.rows.filter((r) => r.fiscalYear === maxFY).map((r) => r.month);
     if (latestMonths.length > 0) {
-      const toFiscalPos = m => (m - 4 + 12) % 12;
-      const latest = latestMonths.reduce((best, m) => toFiscalPos(m) > toFiscalPos(best) ? m : best);
+      const toFiscalPos = (m) => (m - 4 + 12) % 12;
+      const latest = latestMonths.reduce((best, m) => (toFiscalPos(m) > toFiscalPos(best) ? m : best));
       setMonthRange({ start: '4', end: String(latest) });
     }
   }, [rawData]);
@@ -325,11 +345,17 @@ const App = () => {
     [rawData, monthRange.start, monthRange.end]
   );
 
+  /** 期間指定の「開始月」を会計年度のキーに反映（kasouhin_uriage_Web と同様） */
+  const rowsWithFiscalByStartMonth = useMemo(
+    () => mapRowsWithFiscalYearStart(rowsInMonth, monthRange.start),
+    [rowsInMonth, monthRange.start]
+  );
+
   const filteredRows = useMemo(() => {
     const leaseSet = selectedLeases.length ? new Set(selectedLeases) : null;
     const orderSet = selectedOrderClients.length ? new Set(selectedOrderClients) : null;
-    if (!leaseSet && !orderSet) return rowsInMonth;
-    return rowsInMonth.filter((row) => {
+    if (!leaseSet && !orderSet) return rowsWithFiscalByStartMonth;
+    return rowsWithFiscalByStartMonth.filter((row) => {
       if (leaseSet && !leaseSet.has(row.leaseCompany ?? '')) return false;
       if (orderSet) {
         const o = row.orderClient ?? '(未分類)';
@@ -337,7 +363,7 @@ const App = () => {
       }
       return true;
     });
-  }, [rowsInMonth, selectedLeases, selectedOrderClients]);
+  }, [rowsWithFiscalByStartMonth, selectedLeases, selectedOrderClients]);
 
   // ダッシュ用：分析名(大)白／ALLOWED_ITEMS 相当のみ。分類の複数選択は空＝4分類すべて
   const dashboardRows = useMemo(
@@ -459,7 +485,13 @@ const App = () => {
     return all.filter(s => norm(s).includes(q)).slice(0, 50);
   }, [viewMode, dashboardRows, bSearchPref]);
 
-  const years = useMemo(() => rawData?.years || [], [rawData]);
+  const years = useMemo(() => {
+    const set = new Set();
+    for (const r of dashboardRows) {
+      if (r.fiscalYear != null && r.fiscalYear !== '') set.add(Number(r.fiscalYear));
+    }
+    return Array.from(set).sort((a, b) => a - b);
+  }, [dashboardRows]);
 
   const leaseCompanies = useMemo(() =>
     rawData?.leaseCompanies?.filter(lc => lc && lc.trim()) || [],
@@ -635,6 +667,7 @@ const App = () => {
       startMonth: monthRange.start,
       endMonth: monthRange.end,
     });
+    rows = mapRowsWithFiscalYearStart(rows, monthRange.start);
     const allowedNorm = ALLOWED_ITEMS.map(norm);
     rows = rows.filter(r => allowedNorm.includes(norm(r.item)));
     if (selectedItemCategories.length > 0) {
@@ -1209,6 +1242,7 @@ const App = () => {
           <DashboardView
             data={currentTableData}
             years={years}
+            monthRange={monthRange}
             activeView={activeView}
             viewMode={viewMode}
             viewBVariant={viewBVariant}
@@ -1274,7 +1308,7 @@ const LoadingScreen = () => (
 
 // ===== ダッシュボードビュー =====
 const DashboardView = memo(({
-  data, years, activeView, viewMode, viewBVariant, isLeafLevel, checkedItems, onCheckedChange,
+  data, years, monthRange, activeView, viewMode, viewBVariant, isLeafLevel, checkedItems, onCheckedChange,
   onDrillDown, onNavigateTo, onSavePdf, onSaveCsv, fmtAmt, amountUnit, showProfit, totalRow,
   factoryAddressByBranch = new Map(),
   factoryPhoneByBranch = new Map(),
@@ -1466,11 +1500,20 @@ const DashboardView = memo(({
                 <th className="px-3 md:px-8 py-3 md:py-4 min-w-[140px] md:min-w-[200px] text-center">
                   {levelLabel}
                 </th>
-                {years.map(year => (
-                  <th key={year} className="px-2 md:px-6 py-3 md:py-4 text-center border-l border-green-800 min-w-[120px]">
-                    {year}年度
-                  </th>
-                ))}
+                {years.map((year) => {
+                  const sm = parseInt(String(monthRange?.start ?? '4'), 10);
+                  const em = parseInt(String(monthRange?.end ?? '3'), 10);
+                  const range =
+                    sm <= em
+                      ? `${year}年${sm}月〜${year}年${em}月`
+                      : `${year}年${sm}月〜${year + 1}年${em}月`;
+                  return (
+                    <th key={year} className="px-2 md:px-6 py-3 md:py-4 text-center border-l border-green-800 min-w-[120px]">
+                      <div>{year}年度</div>
+                      <div className="text-[10px] font-normal opacity-80 mt-0.5 leading-tight">{range}</div>
+                    </th>
+                  );
+                })}
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">

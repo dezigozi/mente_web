@@ -136,9 +136,35 @@ export function normalizeJapanPhoneDigits(phone) {
 }
 
 /**
- * 現在の表示フィルタに合致した行を、元CSVのヘッダー＋全列のまま出力
+ * 納品日パース済み行から暦の年・月・年月（YYYY-MM）を得る（CSV追記用）
+ * @param {{ year?: number|string, month?: number|string, fiscalYear?: number|string }} row
+ * @returns {{ year: string, month: string, yearMonth: string }}
+ */
+export function deliveryDateCalendarParts(row) {
+  const mNum = Number(row?.month);
+  if (!Number.isFinite(mNum) || mNum < 1 || mNum > 12) {
+    return { year: '', month: '', yearMonth: '' };
+  }
+  let yNum;
+  if (row.year != null && row.year !== '') {
+    yNum = Number(row.year);
+  } else if (row.fiscalYear != null && row.fiscalYear !== '') {
+    yNum = mNum >= 4 ? Number(row.fiscalYear) : Number(row.fiscalYear) + 1;
+  } else {
+    return { year: '', month: String(mNum), yearMonth: '' };
+  }
+  if (!Number.isFinite(yNum)) return { year: '', month: String(mNum), yearMonth: '' };
+  const year = String(yNum);
+  const month = String(mNum);
+  const yearMonth = `${yNum}-${String(mNum).padStart(2, '0')}`;
+  return { year, month, yearMonth };
+}
+
+/**
+ * 現在の表示フィルタに合致した行を、元CSVのヘッダー＋全列のまま出力。
+ * 末尾に「年」「月」「年月」（納品日ベース・マスタ読込時と同じ暦年／月）を付与する。
  * @param {string[]} headers
- * @param {Array<{ rawRow?: string[] }>} rows
+ * @param {Array<{ rawRow?: string[], month?: number, year?: number, fiscalYear?: number }>} rows
  */
 export function generateFullDataCsvContent(headers, rows) {
   if (!headers?.length) return '';
@@ -147,14 +173,16 @@ export function generateFullDataCsvContent(headers, rows) {
     if (/[",\r\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
     return s;
   };
-  const out = [headers.map(escapeCell).join(',')];
+  const extraHeaders = ['年', '月', '年月'];
+  const out = [[...headers, ...extraHeaders].map(escapeCell).join(',')];
   const n = headers.length;
   for (const row of rows) {
     const vals = row?.rawRow;
     if (!vals) continue;
-    out.push(
-      Array.from({ length: n }, (_, i) => escapeCell(vals[i] ?? '')).join(',')
-    );
+    const { year, month, yearMonth } = deliveryDateCalendarParts(row);
+    const cells = Array.from({ length: n }, (_, i) => escapeCell(vals[i] ?? ''));
+    cells.push(escapeCell(year), escapeCell(month), escapeCell(yearMonth));
+    out.push(cells.join(','));
   }
   return out.join('\r\n');
 }
@@ -335,6 +363,8 @@ function parseCsv(csv) {
       date: dateVal,
       fiscalYear: dateInfo.fiscalYear,
       month: dateInfo.month,
+      /** 納品日の暦年（年度開始月を変えたときの会計年度キー再計算用） */
+      year: dateInfo.year,
       leaseCompany: lease,
       orderer,
       orderClient,
@@ -379,14 +409,14 @@ function parseCsv(csv) {
 }
 
 /**
- * カレンダー年月 → 会計年度用の { fiscalYear, month }（4月始まり、月は 1〜12）
- * 1–3 月は fiscalYear = 前年度。
+ * カレンダー年月 → 会計年度用の { fiscalYear, month, year }（4月始まりの基準年度、月は 1〜12）
+ * 1–3 月は fiscalYear = 前年度。year は常に暦の西暦年（UI で年度開始月を変えるときの再分類に使用）。
  * @param {number} y 西暦
  * @param {number} m 月
  */
 function fiscalYearMonthFromCalendar(y, m) {
   if (m < 1 || m > 12 || y < 1000 || y > 3000) return null;
-  return { fiscalYear: m >= 4 ? y : y - 1, month: m };
+  return { fiscalYear: m >= 4 ? y : y - 1, month: m, year: y };
 }
 
 /**
