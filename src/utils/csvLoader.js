@@ -1,4 +1,5 @@
 import { inferPrefectureFromAddress1 } from './jpPrefecture.js';
+import { deliveryDateCalendarParts } from './deliveryDateParts.js';
 
 /**
  * CSVローダー
@@ -136,31 +137,6 @@ export function normalizeJapanPhoneDigits(phone) {
 }
 
 /**
- * 納品日パース済み行から暦の年・月・年月（YYYY-MM）を得る（CSV追記用）
- * @param {{ year?: number|string, month?: number|string, fiscalYear?: number|string }} row
- * @returns {{ year: string, month: string, yearMonth: string }}
- */
-export function deliveryDateCalendarParts(row) {
-  const mNum = Number(row?.month);
-  if (!Number.isFinite(mNum) || mNum < 1 || mNum > 12) {
-    return { year: '', month: '', yearMonth: '' };
-  }
-  let yNum;
-  if (row.year != null && row.year !== '') {
-    yNum = Number(row.year);
-  } else if (row.fiscalYear != null && row.fiscalYear !== '') {
-    yNum = mNum >= 4 ? Number(row.fiscalYear) : Number(row.fiscalYear) + 1;
-  } else {
-    return { year: '', month: String(mNum), yearMonth: '' };
-  }
-  if (!Number.isFinite(yNum)) return { year: '', month: String(mNum), yearMonth: '' };
-  const year = String(yNum);
-  const month = String(mNum);
-  const yearMonth = `${yNum}-${String(mNum).padStart(2, '0')}`;
-  return { year, month, yearMonth };
-}
-
-/**
  * 現在の表示フィルタに合致した行を、元CSVのヘッダー＋全列のまま出力。
  * 末尾に「年」「月」「年月」（納品日ベース・マスタ読込時と同じ暦年／月）を付与する。
  * @param {string[]} headers
@@ -187,10 +163,17 @@ export function generateFullDataCsvContent(headers, rows) {
   return out.join('\r\n');
 }
 
+/** public/data 以下の CSV への URL（先頭が // にならないよう正規化） */
+function publicDataUrl(filename) {
+  let base = import.meta.env.BASE_URL ?? '/';
+  if (typeof base !== 'string' || base === '') base = '/';
+  if (!base.endsWith('/')) base = `${base}/`;
+  return `${base}data/${filename}`;
+}
+
 /** 同一オリジン: prebuild（MASTER_CSV_BUNDLE_URL）で public/data に置いた CSV がビルドに含まれる */
 function masterCsvPathRel() {
-  const b = import.meta.env.BASE_URL || '/';
-  return b.endsWith('/') ? `${b}data/master_data.csv` : `${b}/data/master_data.csv`;
+  return publicDataUrl('master_data.csv');
 }
 
 export async function loadCsvData() {
@@ -516,8 +499,7 @@ export function parseCSVLine(line) {
  * @returns {Promise<{ tabMap: Map<string, Map<string, number>>, applicableDates: Map<string, {year:number,month:number,day:number}> }>}
  */
 export async function loadTabData() {
-  const b = import.meta.env.BASE_URL || '/';
-  const p = b.endsWith('/') ? `${b}data/tab_data.csv` : `${b}/data/tab_data.csv`;
+  const p = publicDataUrl('tab_data.csv');
   const response = await fetch(p);
   if (!response.ok) {
     throw new Error(`HTTP ${response.status}: ${response.statusText}（${p}）`);

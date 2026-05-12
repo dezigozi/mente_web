@@ -1,4 +1,4 @@
-import { deliveryDateCalendarParts } from './csvLoader.js';
+import { deliveryDateCalendarParts } from './deliveryDateParts.js';
 
 /**
  * データ集計ユーティリティ（メンテ実績レポート用）
