@@ -51,6 +51,21 @@ function mapRowsWithFiscalYearStart(rows, startMonthStr) {
   });
 }
 
+/**
+ * 行配列から会計年度の最大値を求める。
+ * Math.max(...配列) は引数スプレッドのため数万行で RangeError（Maximum call stack size exceeded）になる。
+ */
+function maxFiscalYearFromRows(rows) {
+  let maxFY = -Infinity;
+  for (const r of rows) {
+    const x = r?.fiscalYear;
+    if (x == null || x === '') continue;
+    const n = Number(x);
+    if (Number.isFinite(n) && n > maxFY) maxFY = n;
+  }
+  return maxFY === -Infinity ? undefined : maxFY;
+}
+
 const ALLOWED_ITEMS = ['オルタネーター', 'スターター', 'コンプレッサー', 'エアコン関連'];
 // NFKC正規化：半角カナ→全角カナ、全角英数→半角英数 に統一して比較
 const norm = s => (s || '').normalize('NFKC').trim();
@@ -328,10 +343,11 @@ const App = () => {
 
   useEffect(() => {
     if (!rawData?.rows.length) return;
-    const fys = rawData.rows.map((r) => r.fiscalYear).filter((x) => x != null && x !== '');
-    if (!fys.length) return;
-    const maxFY = Math.max(...fys);
-    const latestMonths = rawData.rows.filter((r) => r.fiscalYear === maxFY).map((r) => r.month);
+    const maxFY = maxFiscalYearFromRows(rawData.rows);
+    if (maxFY === undefined) return;
+    const latestMonths = rawData.rows
+      .filter((r) => Number(r.fiscalYear) === maxFY)
+      .map((r) => r.month);
     if (latestMonths.length > 0) {
       const toFiscalPos = (m) => (m - 4 + 12) % 12;
       const latest = latestMonths.reduce((best, m) => (toFiscalPos(m) > toFiscalPos(best) ? m : best));
