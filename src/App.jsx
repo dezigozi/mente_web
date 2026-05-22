@@ -253,7 +253,11 @@ const App = () => {
   const [orderClientQuery, setOrderClientQuery] = useState('');
   /** 得意先名: クリックで開くパネル（常時表示にしない） */
   const [orderClientPanelOpen, setOrderClientPanelOpen] = useState(false);
-  const [monthRange, setMonthRange] = useState({ start: '4', end: '3' });
+  // デフォルトは直近1年（当月起点で12ヶ月遡る。例: 5月起動 → 5月〜翌4月の12ヶ月）
+  const [monthRange, setMonthRange] = useState(() => {
+    const m = new Date().getMonth() + 1;
+    return { start: String(m), end: String(m === 1 ? 12 : m - 1) };
+  });
   const [amountUnit, setAmountUnit] = useState('yen');
   const [showProfit, setShowProfit] = useState(true);
   const [checkedItems, setCheckedItems] = useState(new Set());
@@ -300,7 +304,9 @@ const App = () => {
         await clearCache();
       }
 
-      const csvData = await loadCsvData();
+      const csvData = await loadCsvData(msg => {
+        setLoadingProgress({ fetchMsg: msg, isSyncing: true });
+      });
       const { rows, ...rest } = csvData;
       await setCache(CACHE_KEY, {
         data: { ...rest, rows: rows.map(({ rawRow, ...r }) => r) },
@@ -339,21 +345,16 @@ const App = () => {
     }
   }, []);
 
-  useEffect(() => { loadData(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
+  // パスワード保護が有効な場合は、認証完了するまで重いCSVダウンロード/パースを開始しない。
+  // タブレット等の非力なデバイスでパスワード画面自体が固まる問題への対処。
   useEffect(() => {
-    if (!rawData?.rows.length) return;
-    const maxFY = maxFiscalYearFromRows(rawData.rows);
-    if (maxFY === undefined) return;
-    const latestMonths = rawData.rows
-      .filter((r) => Number(r.fiscalYear) === maxFY)
-      .map((r) => r.month);
-    if (latestMonths.length > 0) {
-      const toFiscalPos = (m) => (m - 4 + 12) % 12;
-      const latest = latestMonths.reduce((best, m) => (toFiscalPos(m) > toFiscalPos(best) ? m : best));
-      setMonthRange({ start: '4', end: String(latest) });
-    }
-  }, [rawData]);
+    const isPasswordProtected = !!import.meta.env.VITE_PASSWORD;
+    if (isPasswordProtected && !isAuthenticated) return;
+    loadData();
+  }, [isAuthenticated]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // 月範囲は初期マウント時に「直近1年」で確定済み。
+  // 旧仕様（データ最新月に end を合わせる）はここで上書きされ、当月起点の start に戻ってしまうため削除。
 
   // 会計月範囲は全行1周のみ。以降の絞り込みは同配列＋Set（二重の filterRows 全件走査を避ける）
   const rowsInMonth = useMemo(
