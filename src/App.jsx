@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useCallback, useEffect, useTransition, memo } from 'react';
+import React, { useState, useMemo, useCallback, useEffect, useTransition, useRef, memo } from 'react';
 import {
   ChevronRight, ChevronDown, ChevronUp, Building2, Tag, Layers,
   ArrowUpRight, ArrowDownRight, LayoutDashboard, Database,
@@ -89,6 +89,17 @@ const BFactoryMultiSelect = ({
   bFactorySelected, onToggle, onSelectAllInView, onClear,
 }) => {
   const [open, setOpen] = useState(false);
+  // 入力即時反映用ローカル state（親 state は debounce で更新）
+  const [localQuery, setLocalQuery] = useState(bFactoryQuery);
+  const debounceRef = useRef();
+  // 外から bFactoryQuery が変わった時にローカルも同期
+  useEffect(() => { setLocalQuery(bFactoryQuery); }, [bFactoryQuery]);
+  const handleChange = (val) => {
+    setLocalQuery(val);
+    setOpen(true);
+    clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => { onQueryChange(val); }, 180);
+  };
   return (
     <div className="relative w-full min-w-0">
       <div className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] ml-0.5 mb-1">
@@ -96,8 +107,8 @@ const BFactoryMultiSelect = ({
       </div>
       <input
         type="text"
-        value={bFactoryQuery}
-        onChange={e => { onQueryChange(e.target.value); setOpen(true); }}
+        value={localQuery}
+        onChange={e => handleChange(e.target.value)}
         onFocus={() => setOpen(true)}
         onBlur={() => { setTimeout(() => setOpen(false), 200); }}
         autoComplete="off"
@@ -108,7 +119,10 @@ const BFactoryMultiSelect = ({
         <div className="text-[10px] font-bold text-emerald-600 mt-0.5">{bFactorySelected.length}件選択中</div>
       )}
       {open && bFactoryListDisplay.length > 0 && (
-        <ul className="absolute z-50 left-0 right-0 top-full mt-1 max-h-48 overflow-y-auto bg-white border border-slate-200 rounded-xl shadow-lg p-1">
+        <ul
+          className="absolute z-50 left-0 right-0 top-full mt-1 max-h-48 overflow-y-auto bg-white border border-slate-200 rounded-xl shadow-lg p-1"
+          onMouseDown={e => e.preventDefault()}
+        >
           {bFactoryListDisplay.map(s => {
             const checked = bFactorySelected.includes(s);
             return (
@@ -119,7 +133,6 @@ const BFactoryMultiSelect = ({
                     className="mt-0.5 flex-shrink-0"
                     checked={checked}
                     onChange={() => onToggle(s)}
-                    onClick={e => e.stopPropagation()}
                   />
                   <span className="text-left break-all font-bold text-slate-800">{s}</span>
                 </label>
@@ -176,6 +189,17 @@ function applyBFactorySearchFilters(rows, { factoryNames, phone, pref }) {
  */
 const SuggestTextInput = ({ label, value, onChange, suggestions, placeholder, id, compact }) => {
   const [open, setOpen] = useState(false);
+  // 入力即時反映用ローカル state（親 state は debounce で更新）
+  const [localValue, setLocalValue] = useState(value);
+  const debounceRef = useRef();
+  // 外から value が変わった時にローカルも同期（候補クリック時など）
+  useEffect(() => { setLocalValue(value); }, [value]);
+  const handleChange = (val) => {
+    setLocalValue(val);
+    setOpen(true);
+    clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => { onChange(val); }, 180);
+  };
   return (
     <div
       className="relative w-full min-w-0"
@@ -188,8 +212,8 @@ const SuggestTextInput = ({ label, value, onChange, suggestions, placeholder, id
         <input
           id={id}
           type="text"
-          value={value}
-          onChange={e => { onChange(e.target.value); setOpen(true); }}
+          value={localValue}
+          onChange={e => handleChange(e.target.value)}
           onFocus={() => setOpen(true)}
           autoComplete="off"
           placeholder={placeholder}
@@ -889,7 +913,7 @@ const App = () => {
       </aside>
 
       {/* Main Content */}
-      <main className="pt-20 min-h-screen px-4 pb-4 md:px-8 md:pb-8 overflow-y-auto custom-scrollbar">
+      <main className="pt-20 h-screen px-4 pb-4 md:px-8 md:pb-8 overflow-y-auto custom-scrollbar">
 
         {/* Header */}
         <header className="mb-6 md:mb-10 space-y-4 md:space-y-8 no-print">
@@ -1338,6 +1362,31 @@ const DashboardView = memo(({
     });
   }, [onCheckedChange]);
 
+  // 年度別ソート
+  const [sortYear, setSortYear] = useState(null);
+  const [sortDir, setSortDir] = useState('desc');
+  // ソートキー: viewMode='A' は売上、'B' は受注数
+  const sortKey = viewMode === 'A' ? 'sales' : 'quantity';
+  const sortKeyLabel = viewMode === 'A' ? '売上' : '受注数';
+
+  const displayData = useMemo(() => {
+    if (!sortYear || !years.includes(sortYear)) return data;
+    const dir = sortDir === 'asc' ? 1 : -1;
+    return [...data].sort((a, b) => ((a[sortKey]?.[sortYear] || 0) - (b[sortKey]?.[sortYear] || 0)) * dir);
+  }, [data, sortYear, sortDir, sortKey, years]);
+
+  const handleSortYear = useCallback((year) => {
+    if (sortYear !== year) {
+      setSortYear(year);
+      setSortDir('desc');
+    } else if (sortDir === 'desc') {
+      setSortDir('asc');
+    } else {
+      setSortYear(null);
+      setSortDir('desc');
+    }
+  }, [sortYear, sortDir]);
+
   const { leaseCo, branch, item } = activeView;
   const emptyView = { leaseCo: null, branch: null, item: null, orderClient: null, orderer: null };
 
@@ -1482,7 +1531,7 @@ const DashboardView = memo(({
       </div>
 
       {/* Table */}
-      <div className="bg-white rounded-3xl md:rounded-[3rem] shadow-sm border border-slate-100 overflow-hidden">
+      <div className="bg-white rounded-3xl md:rounded-[3rem] shadow-sm border border-slate-100 overflow-clip">
         <div className="p-4 md:p-8 border-b border-slate-50 flex flex-col md:flex-row md:justify-between md:items-center gap-3 bg-green-50/30">
           <h3 className="font-black text-slate-800 text-base md:text-xl flex items-center gap-2 min-w-0 max-w-4xl flex-wrap">
             <Tag className="text-emerald-500 flex-shrink-0" />
@@ -1509,12 +1558,12 @@ const DashboardView = memo(({
           </div>
         </div>
 
-        <div className="overflow-x-auto">
+        <div className="overflow-x-clip">
           <table className="w-full text-left border-collapse">
             <thead>
               <tr className="bg-green-900 text-sm md:text-xl font-black text-white tracking-wide text-center">
-                <th className="px-1 md:px-2 py-3 md:py-4 w-10 md:w-12 text-center">選択</th>
-                <th className="px-3 md:px-8 py-3 md:py-4 min-w-[140px] md:min-w-[200px] text-center">
+                <th className="px-1 md:px-2 py-3 md:py-4 w-10 md:w-12 text-center sticky top-0 z-10 bg-green-900">選択</th>
+                <th className="px-3 md:px-8 py-3 md:py-4 min-w-[140px] md:min-w-[200px] text-center sticky top-0 z-10 bg-green-900">
                   {levelLabel}
                 </th>
                 {years.map((year) => {
@@ -1524,9 +1573,22 @@ const DashboardView = memo(({
                     sm <= em
                       ? `${year}年${sm}月〜${year}年${em}月`
                       : `${year}年${sm}月〜${year + 1}年${em}月`;
+                  const isSorted = sortYear === year;
                   return (
-                    <th key={year} className="px-2 md:px-6 py-3 md:py-4 text-center border-l border-green-800 min-w-[120px]">
-                      <div>{year}年度</div>
+                    <th key={year}
+                      onClick={() => handleSortYear(year)}
+                      title={isSorted ? `${sortDir === 'desc' ? '降順' : '昇順'}（再クリックで切替）` : `クリックで${sortKeyLabel}順`}
+                      className="px-2 md:px-6 py-3 md:py-4 text-center border-l border-green-800 min-w-[120px] sticky top-0 z-10 bg-green-900 cursor-pointer hover:bg-green-800 transition-colors select-none">
+                      <div className="flex items-center justify-center gap-1">
+                        <span>{year}年度</span>
+                        {isSorted ? (
+                          sortDir === 'desc'
+                            ? <ArrowDownRight size={14} className="text-amber-300" />
+                            : <ArrowUpRight size={14} className="text-amber-300" />
+                        ) : (
+                          <ArrowUpDown size={12} className="opacity-40" />
+                        )}
+                      </div>
                       <div className="text-[10px] font-normal opacity-80 mt-0.5 leading-tight">{range}</div>
                     </th>
                   );
@@ -1606,14 +1668,14 @@ const DashboardView = memo(({
                 </tr>
               )}
 
-              {data.length === 0 ? (
+              {displayData.length === 0 ? (
                 <tr>
                   <td colSpan={years.length + 2} className="px-4 py-12 text-center text-slate-300 italic">
                     該当するデータがありません
                   </td>
                 </tr>
               ) : (
-                data.map((row, idx) => (
+                displayData.map((row, idx) => (
                   <tr key={idx}
                     className={`group hover:bg-emerald-50/30 transition-all ${!isLeafLevel ? 'cursor-pointer' : ''}`}
                     onClick={() => !isLeafLevel && onDrillDown(row)}>
