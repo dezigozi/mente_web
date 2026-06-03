@@ -3,3 +3,7 @@ dist/
 .env
 .env.local
 Desktop.ini
+
+# local shortcuts / Claude settings (machine-specific, do not track)
+*.lnk
+.claude/
