@@ -1,303 +1,94 @@
-# CLAUDE.md — メンテ実績レポート 実装ルール
+# 架装品売上レポート Web版 — Claude Code 開発ガイド
 
-このファイルは AI エージェント（Cursor / Claude）がこのリポジトリを編集する際に  
-**必ず従う実装規約**を記述する。変更・追加は必ずこのファイルも更新すること。
-
----
-
-## 技術スタック（変更禁止）
-
-| 役割 | 採用技術 |
-|---|---|
-| UI フレームワーク | React 18（関数コンポーネント + Hooks） |
-| ビルドツール | Vite 6 |
-| スタイリング | Tailwind CSS 3（クラス直書き、外部 CSS 最小化） |
-| アイコン | lucide-react |
-| キャッシュ | IndexedDB（`src/utils/db.js`） |
-| データソース | CSV（`public/data/master_data.csv`） |
-| デプロイ | Vercel |
-
-**ライブラリ追加前**に必ず確認。追加する場合は README の「動作環境」も更新する。
+Claude Code が自動で読むプロジェクト設定。配下Webアプリの実装・改修方針。
+<!-- 3兄弟（メンテ実績/架装品500/本作）の共通DNAは skill「社内データ可視化アプリ共通規約」に集約候補 -->
 
 ---
 
-## ファイル構成ルール
+## プロジェクト概要
 
-```
-src/
-├── App.jsx          # 全コンポーネントをここに集約（分割しない）
-└── utils/
-    ├── aggregator.js  # 純粋関数のみ。副作用・状態を持たない
-    ├── csvLoader.js   # CSV パース専用。UI ロジックを混入しない
-    ├── jpPrefecture.js  # 住所1から都道府県推定（正規化・代表表記用）
-    └── db.js          # IndexedDB 操作専用
-```
+架装品売上データの可視化・分析 Webアプリ。GAS API または `public/data/master_data.csv`
+からデータ取得し、ピボット集計・ドリルダウン・伝票別利益分析を行う。
 
-- コンポーネントは **App.jsx 1 ファイルにまとめる**（小規模のため分割不要）
-- `utils/` は副作用なしの純粋関数のみ。React の import 禁止
+**ビュー:** 分析ダッシュボード / 一括網羅レポート / 品番検索レポート / 粗利収支分析（InvoiceReportView）
+**ダッシュ検索:** 顧客検索（複数選択→合算実績）/ 品番検索（複数選択→クロスカット）
 
 ---
 
-## データフロー
+## 技術スタック
 
-### 分析ダッシュボード（大規模データ前提）
-
-`rawData.rows` を**同条件で二重に全件走査しない**こと。会計月は1回 `filterRowsInMonthRange`（`aggregator.js`）にかけ、得た `rowsInMonth` に対してリース・得意先は `Set` で OR 条件を当てる。`filterRows()` による「月＋リース＋得意先」の直列利用は、**同じ操作で二周目の全件走査を生む**ため、ダッシュ用導出では避ける（CSV エクスポート等の一発処理では従来どおり `filterRows` 可）。
-
-```
-CSV → csvLoader.js → rawData（rows[]）
-        ↓
-rowsInMonth         ← filterRowsInMonthRange（月範囲だけ・全行1周。行は `address1`＝住所１列を持つ）
-        ↓
-filteredRows        ← リース・得意先（Set。rowsInMonth 上を追加周回のみ）
-        ↓
-dashboardRows       ← ALLOWED_ITEM_NORM_SET＋norm（分析名。ダッシュ用）
-        ↓
-パターンB 時だけ    ← 工場名候補・電話/都道府県サジェスト（viewMode==='B' ガード）
-        ↓
-aggregateBy*()      ← 集計関数（aggregator.js）
-        ↓
-currentTableData    ← テーブル表示用
-```
-
-### 粗利収支分析
-
-`allProductMonthly` は **reportMode==='margin'（粗利タブ）のときだけ** `rawData.rows` を畳み込む。ダッシュ表示中に毎回作らない（切替の体感を悪化させないため）。
-
-```
-rawData.rows → allProductMonthly（月×リース×品番。粗利タブ表示時のみ構築）
-        ↓
-ProductMarginView 内で期間・リース・分析名・検索・粗利率で絞り込み
-        ↓
-sorted              ← テーブル表示・CSV 出力用
-```
+React 18 + Vite 6 + TailwindCSS 3 + lucide-react / データ: GAS API or master_data.csv /
+キャッシュ: IndexedDB / **デプロイ: Cloudflare Workers (wrangler)** / **カラー: blue**（500版=red）
 
 ---
 
-## 分析名フィルタリング（重要）
+## 粗利収支分析ビュー（InvoiceReportView）※コードは App.jsx 参照
 
-### 対象分析名（ALLOWED_ITEMS）
-```js
-const ALLOWED_ITEMS = ['オルタネーター', 'スターター', 'コンプレッサー', 'エアコン関連'];
-```
+### 2段階設計（パフォーマンスの核心）
+App側で `allInvoices`（rawData変更時のみ集計。60万行→数千件）を作り、ビューには集計済みを渡す。
+- **YOU MUST NOT** `filteredRows`（60万行）をビューに渡さない。毎フィルタで再集計しフリーズする。
+- 設計意図: 1伝票=複数品目行を `documentNumber` でグループ化し sales/profit 合算 → 案件単位の採算。
 
-- **ダッシュボード・粗利収支分析の両方**に適用する
-- `ALLOWED_ITEMS` はファイル先頭（App コンポーネントの外）に定義する
-- 変更する場合はこの定数 **1 箇所だけ** 変えれば両画面に反映される
+### フィルタ連鎖（この順序で useMemo）
+年月 → リース会社 → 支店 → 担当者・顧客名・粗利率 → ソート → ページネーション(100件/頁)
+- **YOU MUST** フィルタ変更時は必ず `setPage(0)` / `resetPage()`。
+- **連動リセット**: リース変更で支店・担当者を `'ALL'` に / 支店変更で担当者を `'ALL'` に。
+- **粗利率フィルタ**: `10`→10%以下 / `0`→赤字のみ / `-1`→大幅赤字のみ。
+- **年月**: 年の選択肢は `allInvoices` の date から動的生成（固定値にしない）。デフォルトは会計年度（開始月4／終了月3、終了年=最新年）。
 
-### 半角・全角の正規化
-```js
-const norm = s => (s || '').normalize('NFKC').trim();
-```
+### CSV出力
+`sortedInvoices`（フィルタ・ソート済み全件）を出力。**ページネーションに関係なく全件**。
 
-- NFKC 正規化で半角カナ→全角カナ、全角英数→半角英数 に統一
-- `ALLOWED_ITEMS` との比較・フィルタリングには必ず `norm()` を使う
-
----
-
-## カレンダー年変換（会計年度 → カレンダー年）
-
-```js
-const toCalYear = (fy, m) => m <= 3 ? fy + 1 : fy;
-```
-
-- 会計年度は **4月始まり** を前提
-- 月 1〜3 は翌カレンダー年として扱う（例：FY2025の3月 = 2026年3月）
-- 粗利収支分析の期間フィルターはカレンダー年月ベースで計算する
+### UI
+サマリー4カード（伝票件数=青 / 売上 / 粗利 / 平均粗利率。モバイル `grid-cols-2`）。
+テーブル=ヘッダー固定(slate)・全カラムソート・赤字ピンク背景・粗利率<10%オレンジバッジ。
+**YOU MUST** `viewMode === 'invoice_report'` 時はメインのフィルタパネル（リース/期間/金額単位/粗利表示/顧客検索）を全非表示。
 
 ---
 
-## CSV 列マッピング（csvLoader.js）
+## ダッシュボード複数選択UI
 
-列名が変わった場合は `csvLoader.js` の `COL_*` 定数を修正する。  
-**インデックスのハードコードより列名ルックアップを優先**（列順変更に強い）。
+### 二相選択（顧客・品番共通）
+`pending`（チェック中）→「表示」ボタン→ `confirmed`（確定・反映）の2段階。
+confirmed が変わって初めて `currentTableData` 再計算。表示ボタンで pending と検索ワードをクリア。
 
-```js
-const COL_DATE   = idx['納品日']        ?? 1;
-const COL_PHONE  = idx['宅配先電話番号'] ?? 10;
-const COL_BRANCH = idx['送り先名']      ?? 11;
-const COL_CODE   = idx['品番']          ?? 30;
-const COL_NAME   = idx['商品名']        ?? 31;
-const COL_ITEM   = idx['分析名(大)']    ?? 32;
-const COL_PRICE  = idx['単価']          ?? 38;
-const COL_QTY    = idx['数量']          ?? 39;
-const COL_PROFIT = idx['粗利']          ?? 40;
-const COL_LEASE  = idx['メンテ']        ?? 41;
-```
+### 複数顧客モード（センチネル `__MULTI_CUSTOMER__`）
+- 判定: `activeView.branchName === '__MULTI_CUSTOMER__'`。`isLeafLevel` を強制 `true` にしてドリル無効化。
+- **YOU MUST** センチネルは `__` で囲み、実在の部店名と衝突させない。
 
-新しい列を追加した場合は：
-1. `csvLoader.js` に `COL_*` 定数を追加
-2. `rows.push({...})` にフィールドを追加
-3. `allProductMonthly`（App.jsx）の map にも追加
-4. `aggregated`（ProductMarginView）の map にも追加
+### 品番クロスカット
+- `selectedProductCodes`（`string[]`、空=フィルタなし）。`hierarchyOrder` は変えない（表示モード維持のまま品番絞り）。
+- 集計は `baseRows`（選択品番でフィルタ済み）経由。`filteredRows` を直接使わない。
 
 ---
 
-## パフォーマンス（必須）
+## GOTCHA（消すとミスする罠）
 
-- **同じフィルタ条件**で `rawData.rows` を**二度**全件 `filter` / `filterRows` しない。月は `rowsInMonth` 1本に寄せ、得意先候補もその配列を流用する。
-- パターンB専用（工場名チェック候補・サジェスト）は `viewMode === 'B'` の `useMemo` 内に閉じる。パターンAの操作的に無駄な導出を走らせない。
-- 粗利タブ集計 `allProductMonthly` は `reportMode === 'margin'` のときだけ作る。ダッシュ操作中に全行畳み込まない。
-- 工場名ドロップダウン等、候補が極端に多い **DOM 一覧は件数に上限**を付け、超過分は検索誘導。定数: `B_FACTORY_CHECKBOX_CAP`（500）。
-- 絞り込み・表示切替に伴い重い子ツリーが再描画されやすい箇所は、必要に応じて `startTransition` または `React.memo` を使う（**入力中の onChange には使わない**＝打鍵遅延の原因）。
-
----
-
-## 状態管理ルール
-
-- グローバル状態管理ライブラリ（Redux 等）は使わない
-- `useState` + `useMemo` + `useCallback` + `useTransition` + `React.memo` で足りる範囲に留める
-- フィルター状態は各ビューコンポーネント内にローカルに持つ
-- 複数選択フィルターは `Set` を使う（`new Set()` = 全選択）
-
-```js
-// 複数選択の実装パターン
-const [selectedItems, setSelectedItems] = useState(new Set()); // 空=すべて
-
-// トグル
-setSelectedItems(prev => {
-  const next = new Set(prev);
-  active ? next.delete(item) : next.add(item);
-  return next;
-});
-
-// フィルター適用
-if (selectedItems.size === 0) return allData;  // 空なら全件
-return allData.filter(r => selectedItems.has(r.field));
-```
+- **型安全（Number変換）** `csvLoader.js` は数値文字列を `Number` 化するため `productCode`/`productName`
+  が数値になりうる。**文字列操作（`.replace`/`for...of` 等）の前に必ず `String()` キャスト**。新規の文字列関数も同様。
+- **levelInfo destructure** `const { branchName, secondName, thirdName } = activeView;` の**3つ全部**を取る。
+  `thirdName` を省くと `if(!thirdName)` で ReferenceError → **画面真っ白**。
+- **CSVパース（Excel保存対策・必須2点）**
+  - BOM除去: 先頭文字が `0xFEFF` なら `slice(1)`（放置で先頭列名 undefined）
+  - ヘッダーtrim: 列名も `.map(h => h.trim())`（放置で `branch\r` → 全行 `(未分類)`）
+- **伝票番号の列名ゆらぎ** CSVヘッダーは `Documentnumber`（大文字N）。集計時は `r.Documentnumber || r.documentNumber` で両参照。
 
 ---
 
-## デザインシステム
+## よくある作業（要点のみ）
 
-### カラー
-- **プライマリ**: `green-900` / `emerald-600`
-- **背景**: `slate-50` / `white`
-- **テキスト**: `slate-800`（見出し）/ `slate-600`（本文）/ `slate-400`（補助）
-- **粗利プラス**: `emerald-600`
-- **粗利マイナス**: `rose-600`
-- **低粗利率（10%未満）**: `amber-600`
-
-### 共通クラスパターン
-```
-// フィルターボタン（アクティブ）
-bg-emerald-600 text-white shadow-md shadow-emerald-200
-
-// フィルターボタン（非アクティブ）
-bg-slate-100 text-slate-500 hover:bg-slate-200
-
-// カード
-bg-white rounded-3xl shadow-sm border border-slate-100
-
-// テーブルヘッダー
-bg-green-900 text-white font-black
-
-// プライマリボタン
-bg-green-900 text-white hover:bg-emerald-600 rounded-3xl font-black
-```
+- **フィルタ追加**: state追加 → 選択肢を useMemo 生成（連動なら上層フィルタ後データから）→ `filteredInvoices` に条件 → UI追加 → 変更時 `resetPage()`。
+- **デフォルト年月変更**: `InvoiceReportView` の `defaultStartYear`/`defaultEndYear`/`startMonth`/`endMonth`。
 
 ---
 
-## キャッシュルール
+## コマンドリファレンス
 
-- キャッシュキー: ソース上の定数 `CACHE_KEY`（現在: `maint_report_data_v10`）。`App.jsx` と一致させる
-- スキーマ変更（フィールド追加など）をした場合は **App.jsx の `CACHE_KEY` のバージョン番号をインクリメント**し、本節の記述も合わせて更新する
-- キャッシュのライフサイクル管理は `src/utils/db.js` のみで行う
-
----
-
-## タブ価格レポート（TabPriceView）
-
-### 概要
-`public/data/tab_data.csv`（TAB価格マスタ）と `master_data.csv`（売上実績）を突合し、
-以下2種類の異常を検知してリース会社ごとにドリルダウン表示するビュー。
-
-| セクション | 検知内容 |
-|---|---|
-| タブ価格未設定品番 | TAB価格マスタに存在しない品番が適用日以降に売上発生 |
-| 単価不一致 | TAB価格マスタに存在するが、実売単価が TAB価格と異なる |
-
-### 定数（App.jsx 内 TabPriceView の外側に定義）
-
-```js
-/** 対象リース会社（この4社以外はフィルターで除外） */
-const TAB_TARGET_LEASES = new Set(['OR', 'NCS', '西出', 'MAL']);
-
-/** 対象分析名（NFKC正規化済み）— エアコン関連は対象外 */
-const TAB_ALLOWED_ITEM_NORMS = new Set(['オルタネーター', 'スターター', 'コンプレッサー']);
-const normTabItem = s => (s || '').normalize('NFKC').trim();
+```bash
+npm run dev      # 開発サーバー（localhost:5173）
+npm run build    # ビルド
+npm run preview  # ビルド確認
+npm run deploy   # Cloudflare Workers へデプロイ（wrangler）
 ```
 
-### 除外ルール（leaseFilteredRows で全適用）
-
-| 除外条件 | 理由 |
-|---|---|
-| `TAB_TARGET_LEASES` 外のリース会社 | 対象4社のみ |
-| `unitPrice === 0` | 0円売上は対象外 |
-| `slipType === '20'` | 伝票区分20は除外 |
-| `productCode` が `/^R[HB]/i` に一致 | RH・RB始まりは適用外 |
-
-### データフロー
-
-```
-rawData.rows
-  ↓ leaseFilteredRows      — 対象4社 + 共通除外（unitPrice=0, slipType=20, RH/RB品番）
-  ↓ applicableDateFilteredRows — リース会社ごとの適用日（tab_data の最新日）以降のみ
-  ├─ missingItems           — TABマスタに品番なし → 未設定品番リスト
-  └─ periodFilteredRows     — さらに期間フィルター（単価不一致用）
-       └─ mismatchItems     — TABマスタに存在するが単価が異なる → 不一致リスト
-```
-
-### tab_data.csv のロード
-
-- `csvLoader.js` の `loadTabData()` を使う（`useEffect` で初回のみ取得）
-- **IndexedDB にはキャッシュしない**（tab_data は小さく変更頻度が高いため毎回フェッチ）
-- `tabMap`: `Map<リース会社, Map<品番, { price, makerCode, dateStr }>>`
-- `applicableDates`: `Map<リース会社, { year, month, day }>`（リース会社ごとの最新適用日）
-
-### UI 構造（ドリルダウン2階層）
-
-```
-第1階層（初期）: リース会社ごとに 品番数 / 件数 を表示。行クリックで第2階層へ。
-第2階層（ドリル）: 品番一覧テーブル。パンくずと「← 一覧に戻る」ボタンで戻る。
-```
-
-- セクション切り替え（未設定 ↔ 不一致）時は自動的に第1階層に戻し、検索・ソートをリセット
-- `drillLease` state で管理（`null` = 第1階層、`string` = そのリース会社にドリルダウン中）
-
-### csvLoader.js で追加した列
-
-```js
-const COL_SLIP      = idx['売上伝票ＮＯ'] ?? idx['売上伝票NO'] ?? 0; // slipNo
-const COL_SLIP_TYPE = idx['伝票区分']      ?? 2;                      // slipType
-const COL_RECV_NAME = idx['受注者名']      ?? 6;                      // receiverName
-// unitPrice は COL_PRICE（単価列）から取得
-```
-
-これらを `rows.push({...})` に追加した場合は必ず **`CACHE_KEY` をインクリメント**する。
-
----
-
-## Git / デプロイルール
-
-- ブランチ: `master`（main ではない）
-- コミットメッセージ: Conventional Commits 形式
-  - `feat:` 新機能
-  - `fix:` バグ修正
-  - `refactor:` 動作変更なしのリファクタリング
-  - `docs:` ドキュメント更新のみ
-- `public/data/master_data.csv` は**ローカル／ビルド成果**に必ず存在する想定。Git に含めない場合の本番:
-  - **Vercel**: Project Settings → Environment Variables に **`MASTER_CSV_BUNDLE_URL`** = ビルドマシンが `GET` できる CSV の URL。`prebuild`（`scripts/bundle-master-csv.mjs`）が1回取得して `public/data/` に書き、`vite build` で**同一デプロイに同梱**（ブラウザ CORS 不要。`loadCsvData` は常に `/data/master_data.csv` 相当のみ）。
-- **GitHub の 100MB 制限**で `master_data.csv` を push できない場合は、上記、または Git LFS・分割等。
-- `.env` はコミット禁止（`.gitignore` に含める）
-
----
-
-## やってはいけないこと
-
-- `src/` を `components/` `pages/` 等に分割しない（小規模のため不要）
-- Tailwind 以外の CSS フレームワーク（Bootstrap 等）を追加しない
-- サーバーサイドロジックを追加しない（完全クライアントサイド）
-- `aggregator.js` に React の `import` を追加しない
-- `ALLOWED_ITEMS` を複数箇所で定義しない（ファイル先頭の 1 箇所のみ）
-- フィルターの "すべて" を `'ALL'` 文字列で判定しない（`Set.size === 0` パターンを使う）
+<!-- 要検討: ALL判定が 'ALL' 文字列。メンテ実績は Set.size===0。方針統一するか決める / React版(18) も500版(19)と要すり合わせ -->
