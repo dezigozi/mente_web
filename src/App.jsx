@@ -1828,6 +1828,13 @@ const loadTabRates = () => {
   return out;
 };
 
+/** 同系品番の基底: 最後の "R-" までを品番本体とみなす（506010-1770R-T / -DK → 506010-1770R） */
+const tabBaseCode = code => {
+  const s = String(code);
+  const i = s.lastIndexOf('R-');
+  return i >= 0 ? s.slice(0, i + 1) : s;
+};
+
 /** 日付 → "YYYY年M月D日"（tab_data.csv の適用日書式） */
 const fmtTabDate = d => `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日`;
 
@@ -2174,11 +2181,27 @@ const TabPriceView = ({ rows, leaseCompanies }) => {
       });
     }
 
+    // コンプレッサーの同系品番インデックス（tab_data 登録済み）: 基底品番 → [{lease, code, ...}]
+    // 「…R-T」「…R-DK」は仕入先違いの同一品なので売価を揃える必要がある
+    const siblingIndex = new Map();
+    for (const lease of TAB_LEASE_ORDER) {
+      const codesMap = tabMap.get(lease);
+      if (!codesMap) continue;
+      for (const [c, reg] of codesMap) {
+        const base = tabBaseCode(c);
+        if (!siblingIndex.has(base)) siblingIndex.set(base, []);
+        siblingIndex.get(base).push({ lease, code: c, makerCode: reg.makerCode, price: reg.price, dateStr: reg.dateStr });
+      }
+    }
+
     const today = fmtTabDate(new Date());
     const codes = [...info.keys()].sort((a, b) => a.localeCompare(b));
-    // groups: 品番ごとに4行 { lease, code, makerCode, price, dateStr, note, registered }
+    // groups: 品番ごとに4行 { lease, code, makerCode, price, dateStr, note, registered } ＋ siblings（同系登録済み）
     const groups = codes.map(code => {
       const e = info.get(code);
+      const siblings = e.item === 'コンプレッサー'
+        ? (siblingIndex.get(tabBaseCode(code)) || []).filter(s => s.code !== code)
+        : [];
       const rows = TAB_LEASE_ORDER.map(lease => {
         const reg = tabMap.get(lease)?.get(code);
         if (reg !== undefined) {
@@ -2187,9 +2210,15 @@ const TabPriceView = ({ rows, leaseCompanies }) => {
         const rate = tabRates[lease]?.[e.item];
         const hasCost = e.unitCost > 0 && rate > 0;
         const price = hasCost ? Math.ceil(e.unitCost / rate / 100) * 100 : null;
-        return { lease, code, makerCode: e.makerCode, price, dateStr: today, note: hasCost ? '' : '原価なし', registered: false };
+        let note = hasCost ? '' : '原価なし';
+        // 同じリース会社に同系品番が登録済みなら価格差を備考に
+        const sib = siblings.find(s => s.lease === lease);
+        if (sib && price != null) {
+          note = sib.price === price ? `同系 ${sib.code} と同額` : `要確認: 同系 ${sib.code} は ¥${sib.price.toLocaleString()}`;
+        }
+        return { lease, code, makerCode: e.makerCode, price, dateStr: today, note, registered: false };
       });
-      return { code, item: e.item, unitCost: e.unitCost, rows };
+      return { code, item: e.item, unitCost: e.unitCost, rows, siblings };
     });
 
     writeTabRegisterXlsx(groups, `タブ価格登録用_${new Date().toISOString().slice(0, 10)}.xlsx`)
