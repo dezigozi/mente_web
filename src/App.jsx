@@ -5,6 +5,7 @@ import {
   Calendar, RefreshCcw, CheckCircle2, FileText, FileSpreadsheet,
   AlertCircle, Loader2, XCircle, Eye, EyeOff,
   CheckSquare, Square, Menu, X, Package, Search, ArrowUpDown,
+  MoreHorizontal, SlidersHorizontal, RotateCcw,
 } from 'lucide-react';
 import { getCache, setCache, clearCache } from './utils/db';
 import { loadCsvData, generateFullDataCsvContent, loadTabData } from './utils/csvLoader';
@@ -1799,6 +1800,36 @@ const normTabItem = s => (s || '').normalize('NFKC').trim();
 /** タブ価格レポート対象リース会社（固定） */
 const TAB_TARGET_LEASES = new Set(['OR', 'NCS', '西出', 'MAL']);
 
+/** 登録用CSVの出力順（4社固定） */
+const TAB_LEASE_ORDER = ['OR', 'NCS', '西出', 'MAL'];
+const TAB_RATE_CATEGORIES = ['オルタネーター', 'スターター', 'コンプレッサー'];
+/** 掛率の既定値（TAB価格 = 原価 ÷ 掛率 → 100円切り上げ） */
+const TAB_RATE_DEFAULTS = {
+  OR:     { 'オルタネーター': 0.70, 'スターター': 0.70, 'コンプレッサー': 0.62 },
+  NCS:    { 'オルタネーター': 0.80, 'スターター': 0.75, 'コンプレッサー': 0.72 },
+  '西出': { 'オルタネーター': 0.70, 'スターター': 0.70, 'コンプレッサー': 0.62 },
+  MAL:    { 'オルタネーター': 0.70, 'スターター': 0.70, 'コンプレッサー': 0.62 },
+};
+const TAB_RATES_LS_KEY = 'tab_price_rates_v1';
+
+/** localStorage の掛率を既定値にマージして返す（壊れていれば既定値） */
+const loadTabRates = () => {
+  const out = {};
+  let saved = null;
+  try { saved = JSON.parse(localStorage.getItem(TAB_RATES_LS_KEY) || 'null'); } catch { saved = null; }
+  for (const lease of TAB_LEASE_ORDER) {
+    out[lease] = {};
+    for (const cat of TAB_RATE_CATEGORIES) {
+      const v = Number(saved?.[lease]?.[cat]);
+      out[lease][cat] = v > 0 && v <= 1 ? v : TAB_RATE_DEFAULTS[lease][cat];
+    }
+  }
+  return out;
+};
+
+/** 日付 → "YYYY年M月D日"（tab_data.csv の適用日書式） */
+const fmtTabDate = d => `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日`;
+
 const TabPriceView = ({ rows, leaseCompanies }) => {
   const [tabData, setTabData]       = useState(null); // { tabMap, applicableDates }
   const [tabLoading, setTabLoading] = useState(true);
@@ -1809,6 +1840,24 @@ const TabPriceView = ({ rows, leaseCompanies }) => {
   const [sortKey, setSortKey]       = useState(null);
   const [sortAsc, setSortAsc]       = useState(true);
   const [drillLease, setDrillLease] = useState(null); // null=リース会社一覧, string=ドリルダウン中
+  const [tabRates, setTabRates]     = useState(loadTabRates);
+  const [showMenu, setShowMenu]     = useState(false);   // ⋯ メニュー
+  const [showRateModal, setShowRateModal] = useState(false);
+
+  const updateTabRate = useCallback((lease, cat, raw) => {
+    const v = Number(raw);
+    if (!(v > 0 && v <= 1)) return; // 不正値は保存せず前の値を維持
+    setTabRates(prev => {
+      const next = { ...prev, [lease]: { ...prev[lease], [cat]: v } };
+      try { localStorage.setItem(TAB_RATES_LS_KEY, JSON.stringify(next)); } catch {}
+      return next;
+    });
+  }, []);
+
+  const resetTabRates = useCallback(() => {
+    try { localStorage.removeItem(TAB_RATES_LS_KEY); } catch {}
+    setTabRates(loadTabRates());
+  }, []);
 
   // 年月オプション（単価不一致用期間フィルター）
   const ymOptions = useMemo(() => {
@@ -2093,6 +2142,63 @@ const TabPriceView = ({ rows, leaseCompanies }) => {
     a.click();
   };
 
+  // 登録用CSV: 未設定品番ごとに4社ぶん（登録済みは備考「登録済み」）を tab_data 形式で出力
+  const handleExportRegisterCsv = () => {
+    if (!tabData) return;
+    const { tabMap } = tabData;
+    const esc = v => { const s = v == null ? '' : String(v); return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
+
+    // 対象品番 = 未設定品番（リース会社フィルター反映済み）
+    const targetCodes = new Set(missingItems.map(m => String(m.productCode)));
+
+    // 品番ごとの代表情報（最新の売上行で上書き）
+    const rowDateVal = r => {
+      const t = Date.parse(String(r.date));
+      return Number.isNaN(t) ? toCalendarYear(r.fiscalYear, r.month) * 100 + r.month : t;
+    };
+    const info = new Map();
+    for (const r of applicableDateFilteredRows) {
+      const code = String(r.productCode);
+      if (!targetCodes.has(code)) continue;
+      const item = normTabItem(r.item);
+      if (!TAB_ALLOWED_ITEM_NORMS.has(item)) continue;
+      const dv = rowDateVal(r);
+      const ex = info.get(code);
+      if (ex && ex.dateVal >= dv) continue;
+      const lineCost = r.sales - r.profit;
+      info.set(code, {
+        code, item,
+        makerCode: r.makerCode,
+        unitCost:  r.quantity > 0 ? lineCost / r.quantity : lineCost,
+        dateVal:   dv,
+      });
+    }
+
+    const today = fmtTabDate(new Date());
+    const lines = [['メンテ', '品番', 'メーカーコード', 'TAB価格', '適用日', '備考'].map(esc).join(',')];
+    const codes = [...info.keys()].sort((a, b) => a.localeCompare(b));
+    for (const code of codes) {
+      const e = info.get(code);
+      for (const lease of TAB_LEASE_ORDER) {
+        const reg = tabMap.get(lease)?.get(code);
+        if (reg !== undefined) {
+          lines.push([lease, code, reg.makerCode || e.makerCode, reg.price, reg.dateStr, '登録済み'].map(esc).join(','));
+          continue;
+        }
+        const rate = tabRates[lease]?.[e.item];
+        const hasCost = e.unitCost > 0 && rate > 0;
+        const price = hasCost ? Math.ceil(e.unitCost / rate / 100) * 100 : '';
+        lines.push([lease, code, e.makerCode, price, today, hasCost ? '' : '原価なし'].map(esc).join(','));
+      }
+    }
+
+    const blob = new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8;' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `タブ価格登録用_${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+  };
+
   return (
     <div className="space-y-6">
       {/* タイトル */}
@@ -2259,7 +2365,94 @@ const TabPriceView = ({ rows, leaseCompanies }) => {
           <FileSpreadsheet size={14} />
           CSV出力
         </button>
+
+        {section === 'missing' && (
+          <>
+            <button onClick={handleExportRegisterCsv} disabled={tabLoading || !tabData}
+              title="未設定品番を4社ぶん（原価÷掛率）tab_data形式で出力"
+              className="flex items-center gap-2 px-4 py-2.5 rounded-2xl bg-emerald-600 text-white text-xs font-black hover:bg-emerald-700 transition-colors shadow-sm disabled:opacity-40">
+              <FileSpreadsheet size={14} />
+              登録用CSV
+            </button>
+
+            {/* ⋯ メニュー */}
+            <div className="relative">
+              <button onClick={() => setShowMenu(v => !v)}
+                className="flex items-center justify-center w-10 h-10 rounded-2xl bg-white border border-slate-200 text-slate-500 hover:text-emerald-600 hover:border-emerald-300 transition-colors shadow-sm">
+                <MoreHorizontal size={16} />
+              </button>
+              {showMenu && (
+                <>
+                  <div className="fixed inset-0 z-30" onClick={() => setShowMenu(false)} />
+                  <div className="absolute right-0 mt-2 w-44 bg-white border border-slate-200 rounded-2xl shadow-lg z-40 overflow-hidden">
+                    <button onClick={() => { setShowMenu(false); setShowRateModal(true); }}
+                      className="w-full flex items-center gap-2 px-4 py-3 text-xs font-black text-slate-700 hover:bg-emerald-50 hover:text-emerald-700 transition-colors">
+                      <SlidersHorizontal size={14} /> 掛率設定
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+          </>
+        )}
       </div>
+
+      {/* 掛率設定モーダル */}
+      {showRateModal && (
+        <div className="fixed inset-0 bg-black/40 z-40 flex items-center justify-center p-4" onClick={() => setShowRateModal(false)}>
+          <div className="bg-white rounded-3xl shadow-xl w-full max-w-lg p-6" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-2">
+                <SlidersHorizontal size={18} className="text-emerald-500" />
+                <h3 className="text-lg font-black text-slate-800">タブ価格 掛率設定</h3>
+              </div>
+              <button onClick={() => setShowRateModal(false)} className="text-slate-400 hover:text-slate-600">
+                <X size={18} />
+              </button>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-slate-100">
+                    <th className="px-2 py-2 text-left text-[10px] font-black text-slate-400 uppercase tracking-widest">リース会社</th>
+                    {TAB_RATE_CATEGORIES.map(cat => (
+                      <th key={cat} className="px-2 py-2 text-center text-[10px] font-black text-slate-400 uppercase tracking-widest whitespace-nowrap">{cat}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {TAB_LEASE_ORDER.map(lease => (
+                    <tr key={lease} className="border-b border-slate-50">
+                      <td className="px-2 py-2 font-black text-slate-800">{lease}</td>
+                      {TAB_RATE_CATEGORIES.map(cat => (
+                        <td key={cat} className="px-2 py-2 text-center">
+                          <input type="number" step="0.01" min="0.01" max="1"
+                            value={tabRates[lease][cat]}
+                            onChange={e => updateTabRate(lease, cat, e.target.value)}
+                            className="w-20 bg-slate-50 border border-slate-200 rounded-xl px-2 py-1.5 text-xs font-mono font-bold text-slate-700 text-right focus:border-emerald-400 outline-none" />
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <p className="mt-3 text-[11px] text-slate-400 font-bold">
+              TAB価格 = 原価 ÷ 掛率 を100円単位で切り上げ。変更は即保存（このブラウザのみ）。
+            </p>
+            <div className="mt-4 flex justify-between">
+              <button onClick={resetTabRates}
+                className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-black text-rose-500 border border-rose-200 hover:bg-rose-50 transition-colors">
+                <RotateCcw size={12} /> 既定に戻す
+              </button>
+              <button onClick={() => setShowRateModal(false)}
+                className="px-4 py-2 rounded-xl bg-slate-700 text-white text-xs font-black hover:bg-slate-800 transition-colors">
+                閉じる
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* テーブル */}
       <div className="bg-white rounded-3xl shadow-sm border border-slate-100 overflow-hidden">
