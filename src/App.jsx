@@ -9,6 +9,7 @@ import {
 } from 'lucide-react';
 import { getCache, setCache, clearCache } from './utils/db';
 import { loadCsvData, generateFullDataCsvContent, loadTabData } from './utils/csvLoader';
+import { writeTabRegisterXlsx } from './utils/tabRegisterXlsx';
 /**
  * メンテ実績ダッシュ（単一ファイル構成）
  *
@@ -2142,11 +2143,10 @@ const TabPriceView = ({ rows, leaseCompanies }) => {
     a.click();
   };
 
-  // 登録用CSV: 未設定品番ごとに4社ぶん（登録済みは備考「登録済み」）を tab_data 形式で出力
+  // 登録用Excel: 未設定品番ごとに4社ぶん（登録済みは備考「登録済み」）を tab_data 形式で出力
   const handleExportRegisterCsv = () => {
     if (!tabData) return;
     const { tabMap } = tabData;
-    const esc = v => { const s = v == null ? '' : String(v); return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
 
     // 対象品番 = 未設定品番（リース会社フィルター反映済み）
     const targetCodes = new Set(missingItems.map(m => String(m.productCode)));
@@ -2175,28 +2175,25 @@ const TabPriceView = ({ rows, leaseCompanies }) => {
     }
 
     const today = fmtTabDate(new Date());
-    const lines = [['メンテ', '品番', 'メーカーコード', 'TAB価格', '適用日', '備考'].map(esc).join(',')];
     const codes = [...info.keys()].sort((a, b) => a.localeCompare(b));
-    for (const code of codes) {
+    // groups: 品番ごとに4行 { lease, code, makerCode, price, dateStr, note, registered }
+    const groups = codes.map(code => {
       const e = info.get(code);
-      for (const lease of TAB_LEASE_ORDER) {
+      const rows = TAB_LEASE_ORDER.map(lease => {
         const reg = tabMap.get(lease)?.get(code);
         if (reg !== undefined) {
-          lines.push([lease, code, reg.makerCode || e.makerCode, reg.price, reg.dateStr, '登録済み'].map(esc).join(','));
-          continue;
+          return { lease, code, makerCode: reg.makerCode || e.makerCode, price: reg.price, dateStr: reg.dateStr, note: '登録済み', registered: true };
         }
         const rate = tabRates[lease]?.[e.item];
         const hasCost = e.unitCost > 0 && rate > 0;
-        const price = hasCost ? Math.ceil(e.unitCost / rate / 100) * 100 : '';
-        lines.push([lease, code, e.makerCode, price, today, hasCost ? '' : '原価なし'].map(esc).join(','));
-      }
-    }
+        const price = hasCost ? Math.ceil(e.unitCost / rate / 100) * 100 : null;
+        return { lease, code, makerCode: e.makerCode, price, dateStr: today, note: hasCost ? '' : '原価なし', registered: false };
+      });
+      return { code, item: e.item, unitCost: e.unitCost, rows };
+    });
 
-    const blob = new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8;' });
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = `タブ価格登録用_${new Date().toISOString().slice(0, 10)}.csv`;
-    a.click();
+    writeTabRegisterXlsx(groups, `タブ価格登録用_${new Date().toISOString().slice(0, 10)}.xlsx`)
+      .catch(err => alert(`Excel出力に失敗しました: ${err.message}`));
   };
 
   return (
@@ -2369,10 +2366,10 @@ const TabPriceView = ({ rows, leaseCompanies }) => {
         {section === 'missing' && (
           <>
             <button onClick={handleExportRegisterCsv} disabled={tabLoading || !tabData}
-              title="未設定品番を4社ぶん（原価÷掛率）tab_data形式で出力"
+              title="未設定品番を4社ぶん（原価÷掛率）tab_data形式のExcelで出力"
               className="flex items-center gap-2 px-4 py-2.5 rounded-2xl bg-emerald-600 text-white text-xs font-black hover:bg-emerald-700 transition-colors shadow-sm disabled:opacity-40">
               <FileSpreadsheet size={14} />
-              登録用CSV
+              登録用Excel
             </button>
 
             {/* ⋯ メニュー */}
