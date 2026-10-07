@@ -14,7 +14,7 @@
 import { parseCsv } from './csvParse.js';
 
 self.onmessage = async (e) => {
-  const { url, etag } = e.data || {};
+  const { url, etag, keepRaw = false } = e.data || {};
   try {
     self.postMessage({ type: 'progress', message: 'サーバーに接続中...' });
 
@@ -37,7 +37,7 @@ self.onmessage = async (e) => {
     const csv = await response.text();
 
     self.postMessage({ type: 'progress', message: 'データを解析中（数十万行）...' });
-    const result = parseCsv(csv);
+    const result = parseCsv(csv, { keepRaw });
 
     self.postMessage({ ok: true, result, etag: newEtag });
   } catch (err) {

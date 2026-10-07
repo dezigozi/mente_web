@@ -47,3 +47,14 @@ export const clearCache = async () => {
     request.onerror = () => reject(request.error);
   });
 };
+
+export const deleteCache = async (keys) => {
+  const db = await initDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction('cache', 'readwrite');
+    const store = tx.objectStore('cache');
+    keys.forEach(k => store.delete(k));
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+};

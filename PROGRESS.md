@@ -9,7 +9,13 @@
 - 注文者パターン・パターン1は従来どおりドリルダウン
 - 工場一覧に「ルート計画書Excel」ボタン：チェックした工場（表示順）を営業ルートプランナーの計画書ひな型（`public/route_plan_template.xlsx`）の訪問先/住所/TELに流し込み。保存はファイル選択（初期位置デスクトップ）、非対応ブラウザは通常ダウンロード。`src/utils/routePlanXlsx.js`。プランナーの parsePlan で35件読めるのを確認済み、未コミット
 - タブ価格「登録用Excel」の粗利単価・同系品番比較（7cc4032）は commit 済み
-- build 通過、未コミット
+- 重さ対策（未コミット）:
+  - 表は段階描画（150行ずつ、main のスクロールで IntersectionObserver が継ぎ足し）。印刷直前（beforeprint）はチェック行だけ全部描く
+  - 行を `DashRowGroup`（memo）に切り出し、チェック/展開で該当行だけ再描画
+  - 読み込みは csvLoader に一本化（App の二重IndexedDB読み書きを削除）。キャッシュは rawRow なしの v2、旧キーは起動時に削除
+  - CSV全列出力は `loadCsvDataFull()` で毎回取得（約5秒）
+  - 実測（ヘッドレスChrome, 工場→メンテ）: 切替 5.3s→0.3s / チェック 1.3s→0.03s / スクロール最大 1.3s→18ms / DOM 39万→8千 / ヒープ 584→169MB / キャッシュ再読込 2.0s→0.5s
+- build 通過
 
 ## ② 次にやること
 - ブラウザで展開・印刷プレビュー確認 → commit → push → deploy

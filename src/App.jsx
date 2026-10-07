@@ -1,4 +1,5 @@
 import React, { useState, useMemo, useCallback, useEffect, useTransition, useRef, memo } from 'react';
+import { flushSync } from 'react-dom';
 import {
   ChevronRight, ChevronDown, ChevronUp, Building2, Tag, Layers,
   ArrowUpRight, ArrowDownRight, LayoutDashboard, Database,
@@ -7,8 +8,8 @@ import {
   CheckSquare, Square, Menu, X, Package, Search, ArrowUpDown,
   MoreHorizontal, SlidersHorizontal, RotateCcw, MapPin,
 } from 'lucide-react';
-import { getCache, setCache, clearCache } from './utils/db';
-import { loadCsvData, generateFullDataCsvContent, loadTabData } from './utils/csvLoader';
+import { clearCache } from './utils/db';
+import { loadCsvData, loadCsvDataFull, generateFullDataCsvContent, loadTabData } from './utils/csvLoader';
 import { writeTabRegisterXlsx } from './utils/tabRegisterXlsx';
 import { writeRoutePlanXlsx } from './utils/routePlanXlsx';
 /**
@@ -35,7 +36,6 @@ import {
   generateDetailCsvContent, calcYoY, formatCurrencyFull,
 } from './utils/aggregator';
 
-const CACHE_KEY = 'maint_report_data_v11';
 
 /** 期間指定の開始月に合わせて行の fiscalYear を付け替え（kasouhin_uriage_Web と同ロジック） */
 function mapRowsWithFiscalYearStart(rows, startMonthStr) {
@@ -321,52 +321,20 @@ const App = () => {
     setLoadingProgress({ fetchMsg: 'CSVデータを読み込み中...', isSyncing: true });
 
     try {
-      if (!forceRefresh) {
-        const cached = await getCache(CACHE_KEY);
-        if (cached?.data) {
-          const ageMin = Math.floor((Date.now() - cached.timestamp) / 60000);
-          setRawData({ ...cached.data, fromCache: true, cacheAgeMsg: `${ageMin}分前のデータ` });
-          setConnectionStatus('online');
-        }
-      } else {
-        await clearCache();
-      }
-
+      // キャッシュ（IndexedDB）と ETag 判定は loadCsvData 側に一本化。ここで二重に読み書きしない
+      if (forceRefresh) await clearCache();
       const csvData = await loadCsvData(msg => {
         setLoadingProgress({ fetchMsg: msg, isSyncing: true });
-      });
-      const { rows, ...rest } = csvData;
-      await setCache(CACHE_KEY, {
-        data: { ...rest, rows: rows.map(({ rawRow, ...r }) => r) },
-        timestamp: Date.now(),
       });
       setRawData({ ...csvData, fromCache: false, cacheAgeMsg: '最新' });
       setConnectionStatus('online');
     } catch (err) {
       console.error('データ読み込みエラー:', err);
-      // オフライン・配信欠け時: IndexedDB にキャッシュがあれば前回データを表示（赤エラーは出さない）
-      let recovered = false;
-      try {
-        const fromStore = await getCache(CACHE_KEY);
-        if (fromStore?.data?.rows?.length) {
-          const ageMin = Math.floor((Date.now() - fromStore.timestamp) / 60000);
-          setRawData({
-            ...fromStore.data,
-            fromCache: true,
-            cacheAgeMsg: `${ageMin}分前（最新CSV取得失敗。キャッシュ表示。master_data 配置を確認）`,
-          });
-          setLoadError(null);
-          setConnectionStatus('online');
-          recovered = true;
-        }
-      } catch (_) { /* noop */ }
-      if (!recovered) {
-        const reason = err instanceof Error ? err.message : String(err);
-        setLoadError(
-          `CSVの読み込みに失敗しました。本番では public/data/master_data.csv をデプロイに含め、ローカルは「npm run dev」で起動（file:// 不可）してください。詳細: ${reason}`
-        );
-        setConnectionStatus('offline');
-      }
+      const reason = err instanceof Error ? err.message : String(err);
+      setLoadError(
+        `CSVの読み込みに失敗しました。本番では public/data/master_data.csv をデプロイに含め、ローカルは「npm run dev」で起動（file:// 不可）してください。詳細: ${reason}`
+      );
+      setConnectionStatus('offline');
     } finally {
       setIsLoading(false);
       setLoadingProgress({ fetchMsg: '', isSyncing: false });
@@ -701,7 +669,7 @@ const App = () => {
     if (!rawData?.rows?.[0] || !Array.isArray(rawData.rows[0].rawRow)) {
       setLoadingProgress({ fetchMsg: 'エクスポート用に全列を読み込み中...', isSyncing: true });
       try {
-        dataSource = await loadCsvData();
+        dataSource = await loadCsvDataFull();
       } catch (e) {
         console.error('全列CSV再取得失敗', e);
         return;
@@ -1359,6 +1327,153 @@ const LoadingScreen = () => (
   </div>
 );
 
+const RENDER_CHUNK = 150;
+
+// ===== ダッシュ表の1行（＋展開した子行）。チェック/展開で該当行だけ再描画させるため memo =====
+const NO_CHILDREN = [];
+const formatMarginRate = (p, s) => {
+  if (s == null || s === 0) return '—';
+  return `${((p / s) * 100).toFixed(1)}%`;
+};
+const DashRowGroup = memo(({
+  row, years, viewMode, isLeafLevel, canExpand, isChecked, isOpen, childRows, showFactoryInfo, address, phone,
+  fmtAmt, showProfit, onToggleCheck, onToggleExpand, onDrillDown, onNavigateTo,
+}) => (
+    <tbody className={`print-group border-t border-slate-100 ${isChecked ? '' : 'no-print'}`}>
+      <tr
+        className={`group hover:bg-emerald-50/30 transition-colors ${!isLeafLevel ? 'cursor-pointer' : ''} ${isOpen ? 'bg-emerald-50/20' : ''}`}
+        onClick={() => {
+          if (canExpand) onToggleExpand(row.name);
+          else if (!isLeafLevel) onDrillDown(row);
+        }}>
+        <td className="px-1 md:px-2 py-4 w-10 md:w-12 align-middle text-center" onClick={e => e.stopPropagation()}>
+          <button type="button" onClick={() => onToggleCheck(row.name)}
+            className="p-1 rounded hover:bg-slate-200 text-slate-500 hover:text-emerald-600 transition-colors">
+            {isChecked
+              ? <CheckSquare size={16} className="text-emerald-600" />
+              : <Square size={16} className="text-slate-300" />}
+          </button>
+        </td>
+        <td className="px-3 md:px-8 py-4">
+          <div className="font-black text-slate-800 text-sm md:text-lg group-hover:text-emerald-600 transition-colors flex items-center gap-2">
+            {canExpand && (
+              isOpen
+                ? <ChevronDown size={16} className="text-emerald-600 flex-shrink-0 no-print" />
+                : <ChevronRight size={16} className="text-slate-400 flex-shrink-0 no-print" />
+            )}
+            {row.name}
+            {!isLeafLevel && !canExpand && (
+              <ChevronRight size={14} className="opacity-0 group-hover:opacity-100 transition-all -translate-x-2 group-hover:translate-x-0" />
+            )}
+          </div>
+          {showFactoryInfo && (address || phone) ? (
+            <div
+              className="mt-1 flex flex-wrap items-baseline gap-x-2 gap-y-0.5 max-w-3xl text-xs font-bold text-slate-500"
+              onMouseDown={e => e.stopPropagation()}
+            >
+              {address ? <span className="break-words">{address}</span> : null}
+              {phone ? <span className="text-slate-600 select-text">TEL: {phone}</span> : null}
+            </div>
+          ) : null}
+          {!isLeafLevel && (
+            <div className="text-[10px] font-bold text-slate-400 mt-1 uppercase tracking-tighter no-print">
+              {canExpand ? 'クリックでメンテ別を展開' : 'クリックでドリルダウン'}
+            </div>
+          )}
+        </td>
+        {years.map((year, yIdx) => {
+          const p = row.profit[year]   || 0;
+          const q = row.quantity[year] || 0;
+          const s = row.sales?.[year]  || 0;
+          const yoy = years[yIdx-1] ? calcYoY(p, row.profit[years[yIdx-1]])   : null;
+          const qoy = years[yIdx-1] ? calcYoY(q, row.quantity[years[yIdx-1]]) : null;
+          const soy = years[yIdx-1] ? calcYoY(s, row.sales?.[years[yIdx-1]] ?? 0) : null;
+          return (
+            <td key={year} className="px-2 md:px-6 py-4 border-l border-slate-300 group-hover:bg-white/50">
+              <div className="space-y-2">
+                <div className="flex justify-between items-baseline">
+                  <span className="text-[10px] font-black text-slate-600">受注数</span>
+                  <div className="text-right">
+                    <div className="font-mono font-black text-slate-700 text-xs md:text-base">{q.toLocaleString()}</div>
+                    {qoy !== null && (
+                      <div className={`text-[10px] font-black flex items-center justify-end gap-0.5 ${parseFloat(qoy) >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
+                        {parseFloat(qoy) >= 0 ? <ArrowUpRight size={10} /> : <ArrowDownRight size={10} />}{qoy}%
+                      </div>
+                    )}
+                  </div>
+                </div>
+                {viewMode === 'A' && (
+                  <div className="flex justify-between items-baseline">
+                    <span className="text-[10px] font-black text-sky-700">売上</span>
+                    <div className="text-right">
+                      <div className="font-mono font-black text-slate-800 text-xs md:text-base">{fmtAmt(s)}</div>
+                      {soy !== null && (
+                        <div className={`text-[10px] font-black flex items-center justify-end gap-0.5 ${parseFloat(soy) >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
+                          {parseFloat(soy) >= 0 ? <ArrowUpRight size={10} /> : <ArrowDownRight size={10} />}{soy}%
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+                {showProfit && (
+                  <div className="flex justify-between items-baseline">
+                    <span className="text-[10px] font-black text-slate-600">粗利</span>
+                    <div className="text-right">
+                      <div className="font-mono font-black text-emerald-600 text-xs md:text-base">{fmtAmt(p)}</div>
+                      {yoy !== null && (
+                        <div className={`text-[10px] font-black flex items-center justify-end gap-0.5 ${parseFloat(yoy) >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
+                          {parseFloat(yoy) >= 0 ? <ArrowUpRight size={10} /> : <ArrowDownRight size={10} />}{yoy}%
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+                {viewMode === 'A' && (
+                  <div className="flex justify-between items-baseline">
+                    <span className="text-[10px] font-black text-amber-700">粗利率</span>
+                    <div className="text-right">
+                      <div className="font-mono font-black text-amber-800 text-xs md:text-base tabular-nums">
+                        {formatMarginRate(p, s)}
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </td>
+          );
+        })}
+      </tr>
+      {childRows.map(c => (
+        <tr key={c.name}
+          className="bg-slate-50/60 hover:bg-emerald-50/40 cursor-pointer transition-colors"
+          title="クリックで分析名(大)別へ"
+          onClick={() => onNavigateTo({ leaseCo: c.name, branch: row.name, item: null, orderClient: null, orderer: null })}>
+          <td className="w-10 md:w-12" />
+          <td className="pl-10 md:pl-16 pr-3 py-2 border-l-4 border-emerald-200" />
+          {years.map((year, yIdx) => {
+            const q = c.quantity[year] || 0;
+            const qoy = years[yIdx-1] ? calcYoY(q, c.quantity[years[yIdx-1]]) : null;
+            return (
+              <td key={year} className="px-2 md:px-6 py-2 border-l border-slate-300">
+                <div className="flex justify-between items-baseline gap-2">
+                  <span className="font-bold text-slate-700 text-xs md:text-sm">{c.name}</span>
+                  <span className="text-right">
+                    <span className="font-mono font-black text-slate-600 text-xs md:text-sm">{q ? q.toLocaleString() : ''}</span>
+                    {qoy !== null && (
+                      <span className={`ml-2 text-[10px] font-black ${parseFloat(qoy) >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
+                        {parseFloat(qoy) >= 0 ? '↗' : '↘'}{qoy}%
+                      </span>
+                    )}
+                  </span>
+                </div>
+              </td>
+            );
+          })}
+        </tr>
+      ))}
+    </tbody>
+));
+
 // ===== ダッシュボードビュー =====
 const DashboardView = memo(({
   data, years, monthRange, activeView, viewMode, viewBVariant, isLeafLevel, checkedItems, onCheckedChange,
@@ -1387,6 +1502,36 @@ const DashboardView = memo(({
     const dir = sortDir === 'asc' ? 1 : -1;
     return [...data].sort((a, b) => ((a[sortKey]?.[sortYear] || 0) - (b[sortKey]?.[sortYear] || 0)) * dir);
   }, [data, sortYear, sortDir, sortKey, years]);
+
+  // 段階描画: 工場一覧は8千行超になるので、最初は一部だけ描いて下までスクロールしたら継ぎ足す
+  const [renderLimit, setRenderLimit] = useState(RENDER_CHUNK);
+  const [printing, setPrinting] = useState(false);
+  useEffect(() => { setRenderLimit(RENDER_CHUNK); }, [displayData]);
+  const visibleData = useMemo(() => {
+    if (printing) return displayData.filter(d => checkedItems.has(d.name));
+    return renderLimit >= displayData.length ? displayData : displayData.slice(0, renderLimit);
+  }, [displayData, renderLimit, printing, checkedItems]);
+  const moreRef = useRef(null);
+  useEffect(() => {
+    const el = moreRef.current;
+    if (!el) return undefined;
+    const io = new IntersectionObserver(entries => {
+      if (entries.some(e => e.isIntersecting)) setRenderLimit(n => n + RENDER_CHUNK);
+    }, { root: el.closest('main'), rootMargin: '1500px 0px' }); // スクロールするのは main
+    io.observe(el);
+    return () => io.disconnect();
+  }, [visibleData]);
+  // 印刷/PDFの直前はチェックした行を全部描く
+  useEffect(() => {
+    const onBefore = () => flushSync(() => setPrinting(true));
+    const onAfter = () => setPrinting(false);
+    window.addEventListener('beforeprint', onBefore);
+    window.addEventListener('afterprint', onAfter);
+    return () => {
+      window.removeEventListener('beforeprint', onBefore);
+      window.removeEventListener('afterprint', onAfter);
+    };
+  }, []);
 
   // 工場一覧の子展開（メンテ別）。工場名の Set
   const [expanded, setExpanded] = useState(() => new Set());
@@ -1431,12 +1576,8 @@ const DashboardView = memo(({
   }, [sortYear, sortDir]);
 
   const { leaseCo, branch, item } = activeView;
+  const showFactoryInfo = viewMode === 'B' && branch === null;
   const emptyView = { leaseCo: null, branch: null, item: null, orderClient: null, orderer: null };
-
-  const formatMarginRate = (p, s) => {
-    if (s == null || s === 0) return '—';
-    return `${((p / s) * 100).toFixed(1)}%`;
-  };
 
   // 現在のレベルに応じたラベルを決定
   let levelLabel, levelTitle;
@@ -1739,152 +1880,30 @@ const DashboardView = memo(({
                 </tr>
               )}
             </tbody>
-              {displayData.map((row, idx) => {
+              {visibleData.map((row, idx) => {
                 const isOpen = canExpand && expanded.has(row.name);
-                const children = isOpen ? (factoryChildren.get(row.name) || []) : [];
                 return (
-                <tbody key={row.name ?? idx} className={`print-group border-t border-slate-100 ${checkedItems.has(row.name) ? '' : 'no-print'}`}>
-                  <tr
-                    className={`group hover:bg-emerald-50/30 transition-all ${!isLeafLevel ? 'cursor-pointer' : ''} ${isOpen ? 'bg-emerald-50/20' : ''}`}
-                    onClick={() => {
-                      if (canExpand) toggleExpand(row.name);
-                      else if (!isLeafLevel) onDrillDown(row);
-                    }}>
-                    <td className="px-1 md:px-2 py-4 w-10 md:w-12 align-middle text-center" onClick={e => e.stopPropagation()}>
-                      <button type="button" onClick={() => toggleCheck(row.name)}
-                        className="p-1 rounded hover:bg-slate-200 text-slate-500 hover:text-emerald-600 transition-colors">
-                        {checkedItems.has(row.name)
-                          ? <CheckSquare size={16} className="text-emerald-600" />
-                          : <Square size={16} className="text-slate-300" />}
-                      </button>
-                    </td>
-                    <td className="px-3 md:px-8 py-4">
-                      <div className="font-black text-slate-800 text-sm md:text-lg group-hover:text-emerald-600 transition-colors flex items-center gap-2">
-                        {canExpand && (
-                          isOpen
-                            ? <ChevronDown size={16} className="text-emerald-600 flex-shrink-0 no-print" />
-                            : <ChevronRight size={16} className="text-slate-400 flex-shrink-0 no-print" />
-                        )}
-                        {row.name}
-                        {!isLeafLevel && !canExpand && (
-                          <ChevronRight size={14} className="opacity-0 group-hover:opacity-100 transition-all -translate-x-2 group-hover:translate-x-0" />
-                        )}
-                      </div>
-                      {viewMode === 'B' && branch === null
-                        && ((factoryAddressByBranch.get(row.name) || '').trim() || (factoryPhoneByBranch.get(row.name) || '').trim()) ? (
-                        <div
-                          className="mt-1 flex flex-wrap items-baseline gap-x-2 gap-y-0.5 max-w-3xl text-xs font-bold text-slate-500"
-                          onMouseDown={e => e.stopPropagation()}
-                        >
-                          {(factoryAddressByBranch.get(row.name) || '').trim() ? (
-                            <span className="break-words">{(factoryAddressByBranch.get(row.name) || '').trim()}</span>
-                          ) : null}
-                          {(factoryPhoneByBranch.get(row.name) || '').trim() ? (
-                            <span className="text-slate-600 select-text">
-                              TEL: {(factoryPhoneByBranch.get(row.name) || '').trim()}
-                            </span>
-                          ) : null}
-                        </div>
-                      ) : null}
-                      {!isLeafLevel && (
-                        <div className="text-[10px] font-bold text-slate-400 mt-1 uppercase tracking-tighter no-print">
-                          {canExpand ? 'クリックでメンテ別を展開' : 'クリックでドリルダウン'}
-                        </div>
-                      )}
-                    </td>
-                    {years.map((year, yIdx) => {
-                      const p = row.profit[year]   || 0;
-                      const q = row.quantity[year] || 0;
-                      const s = row.sales?.[year]  || 0;
-                      const yoy = years[yIdx-1] ? calcYoY(p, row.profit[years[yIdx-1]])   : null;
-                      const qoy = years[yIdx-1] ? calcYoY(q, row.quantity[years[yIdx-1]]) : null;
-                      const soy = years[yIdx-1] ? calcYoY(s, row.sales?.[years[yIdx-1]] ?? 0) : null;
-                      return (
-                        <td key={year} className="px-2 md:px-6 py-4 border-l border-slate-300 group-hover:bg-white/50">
-                          <div className="space-y-2">
-                            <div className="flex justify-between items-baseline">
-                              <span className="text-[10px] font-black text-slate-600">受注数</span>
-                              <div className="text-right">
-                                <div className="font-mono font-black text-slate-700 text-xs md:text-base">{q.toLocaleString()}</div>
-                                {qoy !== null && (
-                                  <div className={`text-[10px] font-black flex items-center justify-end gap-0.5 ${parseFloat(qoy) >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
-                                    {parseFloat(qoy) >= 0 ? <ArrowUpRight size={10} /> : <ArrowDownRight size={10} />}{qoy}%
-                                  </div>
-                                )}
-                              </div>
-                            </div>
-                            {viewMode === 'A' && (
-                              <div className="flex justify-between items-baseline">
-                                <span className="text-[10px] font-black text-sky-700">売上</span>
-                                <div className="text-right">
-                                  <div className="font-mono font-black text-slate-800 text-xs md:text-base">{fmtAmt(s)}</div>
-                                  {soy !== null && (
-                                    <div className={`text-[10px] font-black flex items-center justify-end gap-0.5 ${parseFloat(soy) >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
-                                      {parseFloat(soy) >= 0 ? <ArrowUpRight size={10} /> : <ArrowDownRight size={10} />}{soy}%
-                                    </div>
-                                  )}
-                                </div>
-                              </div>
-                            )}
-                            {showProfit && (
-                              <div className="flex justify-between items-baseline">
-                                <span className="text-[10px] font-black text-slate-600">粗利</span>
-                                <div className="text-right">
-                                  <div className="font-mono font-black text-emerald-600 text-xs md:text-base">{fmtAmt(p)}</div>
-                                  {yoy !== null && (
-                                    <div className={`text-[10px] font-black flex items-center justify-end gap-0.5 ${parseFloat(yoy) >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
-                                      {parseFloat(yoy) >= 0 ? <ArrowUpRight size={10} /> : <ArrowDownRight size={10} />}{yoy}%
-                                    </div>
-                                  )}
-                                </div>
-                              </div>
-                            )}
-                            {viewMode === 'A' && (
-                              <div className="flex justify-between items-baseline">
-                                <span className="text-[10px] font-black text-amber-700">粗利率</span>
-                                <div className="text-right">
-                                  <div className="font-mono font-black text-amber-800 text-xs md:text-base tabular-nums">
-                                    {formatMarginRate(p, s)}
-                                  </div>
-                                </div>
-                              </div>
-                            )}
-                          </div>
-                        </td>
-                      );
-                    })}
-                  </tr>
-                  {children.map(c => (
-                    <tr key={c.name}
-                      className="bg-slate-50/60 hover:bg-emerald-50/40 cursor-pointer transition-colors"
-                      title="クリックで分析名(大)別へ"
-                      onClick={() => onNavigateTo({ leaseCo: c.name, branch: row.name, item: null, orderClient: null, orderer: null })}>
-                      <td className="w-10 md:w-12" />
-                      <td className="pl-10 md:pl-16 pr-3 py-2 border-l-4 border-emerald-200" />
-                      {years.map((year, yIdx) => {
-                        const q = c.quantity[year] || 0;
-                        const qoy = years[yIdx-1] ? calcYoY(q, c.quantity[years[yIdx-1]]) : null;
-                        return (
-                          <td key={year} className="px-2 md:px-6 py-2 border-l border-slate-300">
-                            <div className="flex justify-between items-baseline gap-2">
-                              <span className="font-bold text-slate-700 text-xs md:text-sm">{c.name}</span>
-                              <span className="text-right">
-                                <span className="font-mono font-black text-slate-600 text-xs md:text-sm">{q ? q.toLocaleString() : ''}</span>
-                                {qoy !== null && (
-                                  <span className={`ml-2 text-[10px] font-black ${parseFloat(qoy) >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
-                                    {parseFloat(qoy) >= 0 ? '↗' : '↘'}{qoy}%
-                                  </span>
-                                )}
-                              </span>
-                            </div>
-                          </td>
-                        );
-                      })}
-                    </tr>
-                  ))}
-                </tbody>
+                  <DashRowGroup key={row.name ?? idx}
+                    row={row} years={years} viewMode={viewMode} isLeafLevel={isLeafLevel} canExpand={canExpand}
+                    isChecked={checkedItems.has(row.name)} isOpen={isOpen}
+                    childRows={isOpen ? (factoryChildren.get(row.name) || NO_CHILDREN) : NO_CHILDREN}
+                    showFactoryInfo={showFactoryInfo}
+                    address={showFactoryInfo ? (factoryAddressByBranch.get(row.name) || '').trim() : ''}
+                    phone={showFactoryInfo ? (factoryPhoneByBranch.get(row.name) || '').trim() : ''}
+                    fmtAmt={fmtAmt} showProfit={showProfit}
+                    onToggleCheck={toggleCheck} onToggleExpand={toggleExpand}
+                    onDrillDown={onDrillDown} onNavigateTo={onNavigateTo} />
                 );
               })}
+              {!printing && visibleData.length < displayData.length && (
+                <tbody className="no-print">
+                  <tr ref={moreRef}>
+                    <td colSpan={years.length + 2} className="px-4 py-6 text-center text-xs font-bold text-slate-400">
+                      読み込み中… {visibleData.length.toLocaleString()} / {displayData.length.toLocaleString()} 行
+                    </td>
+                  </tr>
+                </tbody>
+              )}
           </table>
         </div>
       </div>

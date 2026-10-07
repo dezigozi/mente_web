@@ -166,7 +166,8 @@ function parseDate(dateValue) {
   return fiscalYearMonthFromCalendar(y, m);
 }
 
-export function parseCsv(csv) {
+/** keepRaw=false で元CSVの全列（rawRow）を持たない＝メモリ/IndexedDB を大幅に軽くする */
+export function parseCsv(csv, { keepRaw = true } = {}) {
   const lines = csv.trim().split('\n').filter(line => line.trim());
   if (lines.length === 0) throw new Error('CSVファイルが空です');
 
@@ -347,7 +348,7 @@ export function parseCsv(csv) {
       quantity: qty,
       sales,
       profit,
-      rawRow: [...vals],
+      ...(keepRaw ? { rawRow: [...vals] } : {}),
     });
   }
 

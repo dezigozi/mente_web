@@ -12,7 +12,7 @@
  * 他コードのために、csvParse.js のヘルパー関数を re-export して既存のインポートパスを温存する。
  */
 import CsvWorker from './csvWorker.js?worker';
-import { getCache, setCache } from './db.js';
+import { getCache, setCache, deleteCache } from './db.js';
 import { deliveryDateCalendarParts } from './deliveryDateParts.js';
 import {
   parseCSVLine as _parseCSVLine,
@@ -35,8 +35,10 @@ export const extractNameFromBranchRaw = _extractNameFromBranchRaw;
 export const phoneDigitsKey = _phoneDigitsKey;
 export const normalizeJapanPhoneDigits = _normalizeJapanPhoneDigits;
 
-const CACHE_KEY_DATA = 'csv_parsed_v1';
-const CACHE_KEY_ETAG = 'csv_etag_v1';
+// v2: rawRow（全列）を持たない軽量版。旧キーは起動時に消す
+const CACHE_KEY_DATA = 'csv_parsed_v2';
+const CACHE_KEY_ETAG = 'csv_etag_v2';
+const OLD_CACHE_KEYS = ['csv_parsed_v1', 'csv_etag_v1', 'maint_report_data_v11'];
 
 /** public/data 以下の CSV への URL（先頭が // にならないよう正規化） */
 function publicDataUrl(filename) {
@@ -49,6 +51,8 @@ function publicDataUrl(filename) {
 export async function loadCsvData(onProgress) {
   const notify = (msg) => { try { onProgress?.(msg); } catch { /* noop */ } };
   const url = publicDataUrl('master_data.csv');
+
+  deleteCache(OLD_CACHE_KEYS).catch(() => {});
 
   let cachedData = null;
   let cachedEtag = null;
@@ -104,7 +108,16 @@ export async function loadCsvData(onProgress) {
   return result;
 }
 
-function runCsvWorker({ url, etag, onProgress }) {
+/**
+ * CSV全列エクスポート用: rawRow つきで毎回取得・パース（キャッシュしない）
+ */
+export async function loadCsvDataFull(onProgress) {
+  const { result } = await runCsvWorker({ url: publicDataUrl('master_data.csv'), etag: null, keepRaw: true, onProgress });
+  if (!result) throw new Error('Worker からデータが返りませんでした');
+  return result;
+}
+
+function runCsvWorker({ url, etag, keepRaw = false, onProgress }) {
   return new Promise((resolve, reject) => {
     const worker = new CsvWorker();
     let settled = false;
@@ -139,7 +152,7 @@ function runCsvWorker({ url, etag, onProgress }) {
       reject(new Error(err.message || 'Worker crashed'));
     };
 
-    worker.postMessage({ url, etag });
+    worker.postMessage({ url, etag, keepRaw });
   });
 }
 
