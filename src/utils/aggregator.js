@@ -135,6 +135,23 @@ export function aggregateByMenteUnderFactory(rows, years, factory) {
 }
 
 /**
+ * パターンB 工場一覧の子展開用: 工場名 → メンテ別配列 の Map（1回走査）
+ */
+export function aggregateMenteChildrenByFactory(rows, years) {
+  const byFactory = new Map();
+  rows.forEach(r => {
+    const f = factoryKeyB(r);
+    if (!byFactory.has(f)) byFactory.set(f, []);
+    byFactory.get(f).push(r);
+  });
+  const out = new Map();
+  byFactory.forEach((fr, f) => {
+    out.set(f, aggregateByField(fr, years, r => r.leaseCompany, { sortBy: 'quantity' }));
+  });
+  return out;
+}
+
+/**
  * パターンB 工場＋メンテ内: 分析名(大) 別
  */
 export function aggregateByItemUnderFactoryMente(rows, years, factory, mente) {

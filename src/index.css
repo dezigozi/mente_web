@@ -65,6 +65,8 @@
     width: 100% !important;
   }
   tr { page-break-inside: avoid; }
+  /* 工場＋展開したメンテ行はページをまたがせない */
+  tbody.print-group { break-inside: avoid; page-break-inside: avoid; }
   table th, table td {
     padding: 4px 6px !important;
     min-width: 0 !important;

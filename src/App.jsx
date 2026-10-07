@@ -28,6 +28,7 @@ import {
   aggregateByBranchB,
   aggregateByOrdererForFactory,
   aggregateByMenteUnderFactory,
+  aggregateMenteChildrenByFactory,
   aggregateByItemUnderFactoryMente,
   aggregateByProductCode,
   generateDetailCsvContent, calcYoY, formatCurrencyFull,
@@ -617,6 +618,13 @@ const App = () => {
     }
     return aggregateByBranchB(bSourceRows, years);
   }, [bSourceRows, years, activeView, viewMode, viewBVariant]);
+
+  // パターンB（工場→メンテ）の工場一覧: 行の子展開でメンテ（リース会社）別を出す
+  const factoryChildren = useMemo(() => {
+    if (viewMode !== 'B' || viewBVariant === 'orderer' || activeView.branch !== null) return null;
+    if (!bSourceRows.length || !years.length) return null;
+    return aggregateMenteChildrenByFactory(bSourceRows, years);
+  }, [bSourceRows, years, viewMode, viewBVariant, activeView.branch]);
 
   // viewが変わるたびにチェック状態をリセット
   const viewKey = `${viewMode}|${viewBVariant}|${bFactoryQuery}|${[...bFactorySelected].sort().join('¦')}|${bSearchPhone}|${bSearchPref}|${[...selectedLeases].sort().join('¦')}|${[...selectedItemCategories].sort().join('¦')}|${[...selectedOrderClients].sort().join('¦')}|${activeView.leaseCo}|${activeView.branch}|${activeView.item}|${activeView.orderer ?? ''}`;
@@ -1300,6 +1308,7 @@ const App = () => {
             amountUnit={amountUnit}
             showProfit={showProfit && viewMode === 'A'}
             totalRow={totalRow}
+            factoryChildren={factoryChildren}
             factoryAddressByBranch={factoryAddressByBranch}
             factoryPhoneByBranch={factoryPhoneByBranch}
           />
@@ -1353,6 +1362,7 @@ const LoadingScreen = () => (
 const DashboardView = memo(({
   data, years, monthRange, activeView, viewMode, viewBVariant, isLeafLevel, checkedItems, onCheckedChange,
   onDrillDown, onNavigateTo, onSavePdf, onSaveCsv, fmtAmt, amountUnit, showProfit, totalRow,
+  factoryChildren = null,
   factoryAddressByBranch = new Map(),
   factoryPhoneByBranch = new Map(),
 }) => {
@@ -1376,6 +1386,17 @@ const DashboardView = memo(({
     const dir = sortDir === 'asc' ? 1 : -1;
     return [...data].sort((a, b) => ((a[sortKey]?.[sortYear] || 0) - (b[sortKey]?.[sortYear] || 0)) * dir);
   }, [data, sortYear, sortDir, sortKey, years]);
+
+  // 工場一覧の子展開（メンテ別）。工場名の Set
+  const [expanded, setExpanded] = useState(() => new Set());
+  const canExpand = !!factoryChildren;
+  const toggleExpand = useCallback((name) => {
+    setExpanded(prev => {
+      const n = new Set(prev);
+      n.has(name) ? n.delete(name) : n.add(name);
+      return n;
+    });
+  }, []);
 
   const handleSortYear = useCallback((year) => {
     if (sortYear !== year) {
@@ -1530,6 +1551,19 @@ const DashboardView = memo(({
           className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-slate-100 text-slate-600 hover:bg-slate-200 text-xs font-black transition-colors">
           <Square size={14} /> 全解除
         </button>
+        {canExpand && (
+          <>
+            <button onClick={() => setExpanded(new Set(data.filter(d => checkedItems.has(d.name)).map(d => d.name)))}
+              title="チェックした工場をすべて展開（印刷前に）"
+              className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-slate-100 text-slate-600 hover:bg-emerald-50 hover:text-emerald-700 text-xs font-black transition-colors">
+              <ChevronDown size={14} /> 全展開
+            </button>
+            <button onClick={() => setExpanded(new Set())}
+              className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-slate-100 text-slate-600 hover:bg-slate-200 text-xs font-black transition-colors">
+              <ChevronUp size={14} /> 全閉じ
+            </button>
+          </>
+        )}
       </div>
 
       {/* Table */}
@@ -1597,7 +1631,7 @@ const DashboardView = memo(({
                 })}
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-100">
+            <tbody>
 
               {/* 合計行 */}
               {totalRow && (
@@ -1670,17 +1704,25 @@ const DashboardView = memo(({
                 </tr>
               )}
 
-              {displayData.length === 0 ? (
+              {displayData.length === 0 && (
                 <tr>
                   <td colSpan={years.length + 2} className="px-4 py-12 text-center text-slate-300 italic">
                     該当するデータがありません
                   </td>
                 </tr>
-              ) : (
-                displayData.map((row, idx) => (
-                  <tr key={idx}
-                    className={`group hover:bg-emerald-50/30 transition-all ${!isLeafLevel ? 'cursor-pointer' : ''}`}
-                    onClick={() => !isLeafLevel && onDrillDown(row)}>
+              )}
+            </tbody>
+              {displayData.map((row, idx) => {
+                const isOpen = canExpand && expanded.has(row.name);
+                const children = isOpen ? (factoryChildren.get(row.name) || []) : [];
+                return (
+                <tbody key={row.name ?? idx} className="print-group border-t border-slate-100">
+                  <tr
+                    className={`group hover:bg-emerald-50/30 transition-all ${!isLeafLevel ? 'cursor-pointer' : ''} ${isOpen ? 'bg-emerald-50/20' : ''}`}
+                    onClick={() => {
+                      if (canExpand) toggleExpand(row.name);
+                      else if (!isLeafLevel) onDrillDown(row);
+                    }}>
                     <td className="px-1 md:px-2 py-4 w-10 md:w-12 align-middle text-center" onClick={e => e.stopPropagation()}>
                       <button type="button" onClick={() => toggleCheck(row.name)}
                         className="p-1 rounded hover:bg-slate-200 text-slate-500 hover:text-emerald-600 transition-colors">
@@ -1691,8 +1733,13 @@ const DashboardView = memo(({
                     </td>
                     <td className="px-3 md:px-8 py-4">
                       <div className="font-black text-slate-800 text-sm md:text-lg group-hover:text-emerald-600 transition-colors flex items-center gap-2">
+                        {canExpand && (
+                          isOpen
+                            ? <ChevronDown size={16} className="text-emerald-600 flex-shrink-0 no-print" />
+                            : <ChevronRight size={16} className="text-slate-400 flex-shrink-0 no-print" />
+                        )}
                         {row.name}
-                        {!isLeafLevel && (
+                        {!isLeafLevel && !canExpand && (
                           <ChevronRight size={14} className="opacity-0 group-hover:opacity-100 transition-all -translate-x-2 group-hover:translate-x-0" />
                         )}
                       </div>
@@ -1714,7 +1761,7 @@ const DashboardView = memo(({
                       ) : null}
                       {!isLeafLevel && (
                         <div className="text-[10px] font-bold text-slate-400 mt-1 uppercase tracking-tighter no-print">
-                          クリックでドリルダウン
+                          {canExpand ? 'クリックでメンテ別を展開' : 'クリックでドリルダウン'}
                         </div>
                       )}
                     </td>
@@ -1780,9 +1827,34 @@ const DashboardView = memo(({
                       );
                     })}
                   </tr>
-                ))
-              )}
-            </tbody>
+                  {children.map(c => (
+                    <tr key={c.name}
+                      className="bg-slate-50/60 hover:bg-emerald-50/40 cursor-pointer transition-colors"
+                      title="クリックで分析名(大)別へ"
+                      onClick={() => onNavigateTo({ leaseCo: c.name, branch: row.name, item: null, orderClient: null, orderer: null })}>
+                      <td className="w-10 md:w-12" />
+                      <td className="pl-10 md:pl-16 pr-3 py-2 border-l-4 border-emerald-200">
+                        <div className="font-bold text-slate-700 text-xs md:text-sm">└ {c.name}</div>
+                      </td>
+                      {years.map((year, yIdx) => {
+                        const q = c.quantity[year] || 0;
+                        const qoy = years[yIdx-1] ? calcYoY(q, c.quantity[years[yIdx-1]]) : null;
+                        return (
+                          <td key={year} className="px-2 md:px-6 py-2 border-l border-slate-300 text-right">
+                            <span className="font-mono font-black text-slate-600 text-xs md:text-sm">{q ? q.toLocaleString() : ''}</span>
+                            {qoy !== null && (
+                              <span className={`ml-2 text-[10px] font-black ${parseFloat(qoy) >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
+                                {parseFloat(qoy) >= 0 ? '↗' : '↘'}{qoy}%
+                              </span>
+                            )}
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  ))}
+                </tbody>
+                );
+              })}
           </table>
         </div>
       </div>
