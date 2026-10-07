@@ -1743,7 +1743,7 @@ const DashboardView = memo(({
                 const isOpen = canExpand && expanded.has(row.name);
                 const children = isOpen ? (factoryChildren.get(row.name) || []) : [];
                 return (
-                <tbody key={row.name ?? idx} className="print-group border-t border-slate-100">
+                <tbody key={row.name ?? idx} className={`print-group border-t border-slate-100 ${checkedItems.has(row.name) ? '' : 'no-print'}`}>
                   <tr
                     className={`group hover:bg-emerald-50/30 transition-all ${!isLeafLevel ? 'cursor-pointer' : ''} ${isOpen ? 'bg-emerald-50/20' : ''}`}
                     onClick={() => {

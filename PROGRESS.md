@@ -5,6 +5,7 @@
 - `aggregateMenteChildrenByFactory`（aggregator.js）で工場→メンテ別を1回走査で集計、App → DashboardView に `factoryChildren` で渡す
 - 「全展開 / 全閉じ」ボタン（全展開はチェック中の工場のみ）。子行クリックで従来の「分析名(大)別」へ。子行のメンテ名は工場列でなく各年度セルの左（受注数ラベルの位置）に出す
 - 印刷時は工場＋子行を `tbody.print-group` でまとめ、ページまたぎしない
+- 印刷/PDFはチェックした行だけ（未チェック行の tbody に no-print）
 - 注文者パターン・パターン1は従来どおりドリルダウン
 - 工場一覧に「ルート計画書Excel」ボタン：チェックした工場（表示順）を営業ルートプランナーの計画書ひな型（`public/route_plan_template.xlsx`）の訪問先/住所/TELに流し込み。保存はファイル選択（初期位置デスクトップ）、非対応ブラウザは通常ダウンロード。`src/utils/routePlanXlsx.js`。プランナーの parsePlan で35件読めるのを確認済み、未コミット
 - タブ価格「登録用Excel」の粗利単価・同系品番比較（7cc4032）は commit 済み
