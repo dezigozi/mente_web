@@ -152,6 +152,30 @@ export function aggregateMenteChildrenByFactory(rows, years) {
 }
 
 /**
+ * 工場ごとの注文者 上位n名（指定年度の受注数順。未登録・0件は除く）。対象工場だけ1回走査
+ * @returns {Map<string, string[]>}
+ */
+export function topOrderersByFactory(rows, year, factories, n = 3) {
+  const target = new Set(factories);
+  const counts = new Map();
+  for (const r of rows) {
+    if (r.fiscalYear !== year) continue;
+    const f = factoryKeyB(r);
+    if (!target.has(f)) continue;
+    const o = (r.orderer || '').trim();
+    if (!o || o === '(注文者未登録)' || o === '(未分類)') continue;
+    if (!counts.has(f)) counts.set(f, new Map());
+    const m = counts.get(f);
+    m.set(o, (m.get(o) || 0) + (r.quantity || 0));
+  }
+  const out = new Map();
+  counts.forEach((m, f) => {
+    out.set(f, [...m].filter(([, q]) => q > 0).sort((a, b) => b[1] - a[1]).slice(0, n).map(([o]) => o));
+  });
+  return out;
+}
+
+/**
  * パターンB 工場＋メンテ内: 分析名(大) 別
  */
 export function aggregateByItemUnderFactoryMente(rows, years, factory, mente) {

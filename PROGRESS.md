@@ -7,7 +7,7 @@
 - 印刷時は工場＋子行を `tbody.print-group` でまとめ、ページまたぎしない
 - 印刷/PDFはチェックした行だけ（未チェック行の tbody に no-print）
 - 注文者パターン・パターン1は従来どおりドリルダウン
-- 工場一覧に「ルート計画書Excel」ボタン：チェックした工場（表示順）を営業ルートプランナーの計画書ひな型（`public/route_plan_template.xlsx`）の訪問先/住所/TELに流し込み。保存はファイル選択（初期位置デスクトップ）、非対応ブラウザは通常ダウンロード。`src/utils/routePlanXlsx.js`。プランナーの parsePlan で35件読めるのを確認済み、未コミット
+- 工場一覧に「ルート計画書Excel」ボタン：チェックした工場（表示順）を営業ルートプランナーの計画書ひな型（`public/route_plan_template.xlsx`）の訪問先/住所/TELに流し込み。担当者欄は最新年度の受注数上位3名の注文者（未登録除く、`topOrderersByFactory`、未コミット）。保存はファイル選択（初期位置デスクトップ）、非対応ブラウザは通常ダウンロード。`src/utils/routePlanXlsx.js`。プランナーの parsePlan で35件読めるのを確認済み、未コミット
 - タブ価格「登録用Excel」の粗利単価・同系品番比較（7cc4032）は commit 済み
 - 重さ対策（未コミット）:
   - 表は段階描画（150行ずつ、main のスクロールで IntersectionObserver が継ぎ足し）。印刷直前（beforeprint）はチェック行だけ全部描く

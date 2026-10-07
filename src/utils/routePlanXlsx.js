@@ -1,13 +1,13 @@
 /**
  * 営業ルートプランナー（H:\dev\eigyo_route_planner）に読ませる「訪問ルート計画書」Excel を作る。
  * ひな型は public/route_plan_template.xlsx（プランナーの resources/template.xlsx のコピー）。
- * プランナーは見出し文字で列を探すので、訪問先表（訪問先/住所/TEL）に工場を流し込むだけ。
+ * プランナーは見出し文字で列を探すので、訪問先表（訪問先/住所/TEL/担当者）に工場を流し込むだけ。
  */
 
 const norm = s => String(s ?? '').normalize('NFKC').replace(/\s+/g, '');
 
 /**
- * @param {{ name: string, address: string, tel: string }[]} factories
+ * @param {{ name: string, address: string, tel: string, contact?: string }[]} factories
  */
 export async function writeRoutePlanXlsx(factories) {
   const mod = await import('exceljs');
@@ -29,6 +29,7 @@ export async function writeRoutePlanXlsx(factories) {
       cols.name = map['訪問先'];
       cols.address = map['住所'];
       cols.tel = map['TEL'];
+      cols.contact = map['担当者'];
     }
   }
   if (!headerRow) throw new Error('ひな型に訪問先表が見つからなかったよ');
@@ -44,6 +45,7 @@ export async function writeRoutePlanXlsx(factories) {
     row.getCell(cols.name).value = f.name;
     row.getCell(cols.address).value = f.address || null;
     if (cols.tel) row.getCell(cols.tel).value = f.tel || null;
+    if (cols.contact) row.getCell(cols.contact).value = f.contact || null;
   });
 
   const buf = await wb.xlsx.writeBuffer();

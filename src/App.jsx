@@ -31,6 +31,7 @@ import {
   aggregateByOrdererForFactory,
   aggregateByMenteUnderFactory,
   aggregateMenteChildrenByFactory,
+  topOrderersByFactory,
   aggregateByItemUnderFactoryMente,
   aggregateByProductCode,
   generateDetailCsvContent, calcYoY, formatCurrencyFull,
@@ -594,6 +595,12 @@ const App = () => {
     if (!bSourceRows.length || !years.length) return null;
     return aggregateMenteChildrenByFactory(bSourceRows, years);
   }, [bSourceRows, years, viewMode, viewBVariant, activeView.branch]);
+
+  // ルート計画書Excelの担当者欄用: 最新年度で受注数の多い注文者 上位3名
+  const getTopOrderers = useCallback(
+    (factories) => topOrderersByFactory(bSourceRows, years[years.length - 1], factories, 3),
+    [bSourceRows, years]
+  );
 
   // viewが変わるたびにチェック状態をリセット
   const viewKey = `${viewMode}|${viewBVariant}|${bFactoryQuery}|${[...bFactorySelected].sort().join('¦')}|${bSearchPhone}|${bSearchPref}|${[...selectedLeases].sort().join('¦')}|${[...selectedItemCategories].sort().join('¦')}|${[...selectedOrderClients].sort().join('¦')}|${activeView.leaseCo}|${activeView.branch}|${activeView.item}|${activeView.orderer ?? ''}`;
@@ -1280,6 +1287,7 @@ const App = () => {
             factoryChildren={factoryChildren}
             factoryAddressByBranch={factoryAddressByBranch}
             factoryPhoneByBranch={factoryPhoneByBranch}
+            getTopOrderers={getTopOrderers}
           />
         )}
         {rawData && !isLoading && reportMode === 'margin' && (
@@ -1481,6 +1489,7 @@ const DashboardView = memo(({
   factoryChildren = null,
   factoryAddressByBranch = new Map(),
   factoryPhoneByBranch = new Map(),
+  getTopOrderers,
 }) => {
   const toggleCheck = useCallback((name) => {
     onCheckedChange(prev => {
@@ -1547,13 +1556,14 @@ const DashboardView = memo(({
   // チェックした工場を営業ルートプランナー用の計画書Excelに（工場一覧のときだけ）
   const canRouteExport = viewMode === 'B' && activeView.branch === null;
   const handleRouteExport = useCallback(async () => {
-    const list = displayData
-      .filter(d => checkedItems.has(d.name) && d.name !== '(未分類)')
-      .map(d => ({
-        name: d.name,
-        address: (factoryAddressByBranch.get(d.name) || '').trim(),
-        tel: (factoryPhoneByBranch.get(d.name) || '').trim(),
-      }));
+    const picked = displayData.filter(d => checkedItems.has(d.name) && d.name !== '(未分類)');
+    const top = getTopOrderers ? getTopOrderers(picked.map(d => d.name)) : new Map();
+    const list = picked.map(d => ({
+      name: d.name,
+      address: (factoryAddressByBranch.get(d.name) || '').trim(),
+      tel: (factoryPhoneByBranch.get(d.name) || '').trim(),
+      contact: (top.get(d.name) || []).join('、'),
+    }));
     if (!list.length) { alert('ルートに入れる工場にチェックしてね'); return; }
     try {
       await writeRoutePlanXlsx(list);
@@ -1561,7 +1571,7 @@ const DashboardView = memo(({
       console.error(e);
       alert(e?.message || 'ルート計画書の作成に失敗したよ');
     }
-  }, [displayData, checkedItems, factoryAddressByBranch, factoryPhoneByBranch]);
+  }, [displayData, checkedItems, factoryAddressByBranch, factoryPhoneByBranch, getTopOrderers]);
 
   const handleSortYear = useCallback((year) => {
     if (sortYear !== year) {
