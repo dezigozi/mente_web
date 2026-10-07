@@ -12,6 +12,7 @@ import { clearCache } from './utils/db';
 import { loadCsvData, loadCsvDataFull, generateFullDataCsvContent, loadTabData } from './utils/csvLoader';
 import { writeTabRegisterXlsx } from './utils/tabRegisterXlsx';
 import { writeRoutePlanXlsx } from './utils/routePlanXlsx';
+import areaCodes from './data/areaCodes.json';
 /**
  * メンテ実績ダッシュ（単一ファイル構成）
  *
@@ -179,7 +180,10 @@ function applyBFactorySearchFilters(rows, { factoryNames, phone, pref }) {
   }
   const dP = (phone || '').replace(/\D/g, '');
   if (dP) {
-    out = out.filter(r => (r.phoneSearchStr || '').includes(dP));
+    // 0始まり＝市外局番として前方一致（045 が 03-3045-… に当たらないように）。0なしは従来どおり部分一致
+    out = dP.startsWith('0')
+      ? out.filter(r => (r.phoneSearchStr || '').startsWith(dP))
+      : out.filter(r => (r.phoneSearchStr || '').includes(dP));
   }
   const nPr = (pref || '').trim();
   if (nPr) {
@@ -475,6 +479,14 @@ const App = () => {
         sublabel: k.length >= 2 ? k : '',
         factory,
       });
+    }
+    // 地名（横浜市 など）を打ったら市外局番の一覧から候補を出す
+    const qArea = norm(bSearchPhone.replace(/[\d\s\-－ー()（）]/g, ''));
+    if (qArea) {
+      return areaCodes.list
+        .filter(([, area]) => norm(area).includes(qArea))
+        .slice(0, 50)
+        .map(([tel, area]) => ({ value: tel, label: tel, sublabel: '', factory: area }));
     }
     const list = Array.from(byKey.values());
     const d = bSearchPhone.replace(/\D/g, '');
@@ -1016,7 +1028,7 @@ const App = () => {
                       label="電話番号"
                       value={bSearchPhone}
                       onChange={setBSearchPhone}
-                      placeholder="数字（0なし表記も可）"
+                      placeholder="数字 or 地名（横浜市→045）"
                       suggestions={bSuggestPhone}
                       compact
                     />
