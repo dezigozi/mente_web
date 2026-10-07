@@ -5,11 +5,12 @@ import {
   Calendar, RefreshCcw, CheckCircle2, FileText, FileSpreadsheet,
   AlertCircle, Loader2, XCircle, Eye, EyeOff,
   CheckSquare, Square, Menu, X, Package, Search, ArrowUpDown,
-  MoreHorizontal, SlidersHorizontal, RotateCcw,
+  MoreHorizontal, SlidersHorizontal, RotateCcw, MapPin,
 } from 'lucide-react';
 import { getCache, setCache, clearCache } from './utils/db';
 import { loadCsvData, generateFullDataCsvContent, loadTabData } from './utils/csvLoader';
 import { writeTabRegisterXlsx } from './utils/tabRegisterXlsx';
+import { writeRoutePlanXlsx } from './utils/routePlanXlsx';
 /**
  * メンテ実績ダッシュ（単一ファイル構成）
  *
@@ -1398,6 +1399,25 @@ const DashboardView = memo(({
     });
   }, []);
 
+  // チェックした工場を営業ルートプランナー用の計画書Excelに（工場一覧のときだけ）
+  const canRouteExport = viewMode === 'B' && activeView.branch === null;
+  const handleRouteExport = useCallback(async () => {
+    const list = displayData
+      .filter(d => checkedItems.has(d.name) && d.name !== '(未分類)')
+      .map(d => ({
+        name: d.name,
+        address: (factoryAddressByBranch.get(d.name) || '').trim(),
+        tel: (factoryPhoneByBranch.get(d.name) || '').trim(),
+      }));
+    if (!list.length) { alert('ルートに入れる工場にチェックしてね'); return; }
+    try {
+      await writeRoutePlanXlsx(list);
+    } catch (e) {
+      console.error(e);
+      alert(e?.message || 'ルート計画書の作成に失敗したよ');
+    }
+  }, [displayData, checkedItems, factoryAddressByBranch, factoryPhoneByBranch]);
+
   const handleSortYear = useCallback((year) => {
     if (sortYear !== year) {
       setSortYear(year);
@@ -1563,6 +1583,13 @@ const DashboardView = memo(({
               <ChevronUp size={14} /> 全閉じ
             </button>
           </>
+        )}
+        {canRouteExport && (
+          <button onClick={handleRouteExport}
+            title="チェックした工場を営業ルートプランナーの訪問先に入れた計画書Excelを保存"
+            className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-emerald-600 text-white hover:bg-emerald-700 text-xs font-black transition-colors">
+            <MapPin size={14} /> ルート計画書Excel
+          </button>
         )}
       </div>
 
@@ -1833,20 +1860,23 @@ const DashboardView = memo(({
                       title="クリックで分析名(大)別へ"
                       onClick={() => onNavigateTo({ leaseCo: c.name, branch: row.name, item: null, orderClient: null, orderer: null })}>
                       <td className="w-10 md:w-12" />
-                      <td className="pl-10 md:pl-16 pr-3 py-2 border-l-4 border-emerald-200">
-                        <div className="font-bold text-slate-700 text-xs md:text-sm">└ {c.name}</div>
-                      </td>
+                      <td className="pl-10 md:pl-16 pr-3 py-2 border-l-4 border-emerald-200" />
                       {years.map((year, yIdx) => {
                         const q = c.quantity[year] || 0;
                         const qoy = years[yIdx-1] ? calcYoY(q, c.quantity[years[yIdx-1]]) : null;
                         return (
-                          <td key={year} className="px-2 md:px-6 py-2 border-l border-slate-300 text-right">
-                            <span className="font-mono font-black text-slate-600 text-xs md:text-sm">{q ? q.toLocaleString() : ''}</span>
-                            {qoy !== null && (
-                              <span className={`ml-2 text-[10px] font-black ${parseFloat(qoy) >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
-                                {parseFloat(qoy) >= 0 ? '↗' : '↘'}{qoy}%
+                          <td key={year} className="px-2 md:px-6 py-2 border-l border-slate-300">
+                            <div className="flex justify-between items-baseline gap-2">
+                              <span className="font-bold text-slate-700 text-xs md:text-sm">{c.name}</span>
+                              <span className="text-right">
+                                <span className="font-mono font-black text-slate-600 text-xs md:text-sm">{q ? q.toLocaleString() : ''}</span>
+                                {qoy !== null && (
+                                  <span className={`ml-2 text-[10px] font-black ${parseFloat(qoy) >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
+                                    {parseFloat(qoy) >= 0 ? '↗' : '↘'}{qoy}%
+                                  </span>
+                                )}
                               </span>
-                            )}
+                            </div>
                           </td>
                         );
                       })}
