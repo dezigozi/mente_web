@@ -1736,8 +1736,8 @@ const DashboardView = memo(({
         </button>
         {canExpand && (
           <>
-            <button onClick={() => setExpanded(new Set(data.filter(d => checkedItems.has(d.name)).map(d => d.name)))}
-              title="チェックした工場をすべて展開（印刷前に）"
+            <button onClick={() => setExpanded(new Set(data.map(d => d.name)))}
+              title="すべての工場を展開"
               className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-slate-100 text-slate-600 hover:bg-emerald-50 hover:text-emerald-700 text-xs font-black transition-colors">
               <ChevronDown size={14} /> 全展開
             </button>
