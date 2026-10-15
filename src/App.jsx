@@ -1944,6 +1944,9 @@ const normTabItem = s => (s || '').normalize('NFKC').trim();
 /** タブ価格レポート対象リース会社（固定） */
 const TAB_TARGET_LEASES = new Set(['OR', 'NCS', '西出', 'MAL']);
 
+/** タブ価格更新 bat の置き場所（⋯メニューの更新手順に表示） */
+const TAB_UPDATE_FOLDER = 'H:\\dev\\mente_web\\タブ価格更新';
+
 /** 登録用CSVの出力順（4社固定） */
 const TAB_LEASE_ORDER = ['OR', 'NCS', '西出', 'MAL'];
 const TAB_RATE_CATEGORIES = ['オルタネーター', 'スターター', 'コンプレッサー'];
@@ -1995,6 +1998,7 @@ const TabPriceView = ({ rows, leaseCompanies }) => {
   const [showMenu, setShowMenu]     = useState(false);   // ⋯ メニュー
   const [showRateModal, setShowRateModal] = useState(false);
   const [showUpdateGuide, setShowUpdateGuide] = useState(false);
+  const [guideCopied, setGuideCopied] = useState(false);
 
   const updateTabRate = useCallback((lease, cat, raw) => {
     const v = Number(raw);
@@ -2586,13 +2590,19 @@ const TabPriceView = ({ rows, leaseCompanies }) => {
             </div>
             <div className="space-y-3 text-sm text-slate-700">
               <div>
-                <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">使うもの</p>
-                <p className="font-mono text-xs bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 break-all select-all">H:\dev\mente_web\タブExcelドロップ更新.bat</p>
+                <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">フォルダ（bat が1個だけ入ってる）</p>
+                <div className="flex items-center gap-2">
+                  <p className="flex-1 font-mono text-xs bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 break-all select-all">{TAB_UPDATE_FOLDER}</p>
+                  <button onClick={() => { navigator.clipboard?.writeText(TAB_UPDATE_FOLDER); setGuideCopied(true); setTimeout(() => setGuideCopied(false), 1500); }}
+                    className="shrink-0 px-3 py-2 rounded-xl bg-emerald-600 text-white text-xs font-black hover:bg-emerald-700 transition-colors">
+                    {guideCopied ? 'コピー済' : 'コピー'}
+                  </button>
+                </div>
               </div>
               <ol className="list-decimal pl-5 space-y-1.5 font-bold">
                 <li>リース会社タブ価格のExcel（tab_data シート）を最新にして保存</li>
-                <li>エクスプローラーで <span className="font-mono text-xs">H:\dev\mente_web</span> を開く</li>
-                <li>そのExcelを <span className="text-emerald-700">タブExcelドロップ更新.bat</span> のアイコンにドラッグ＆ドロップ</li>
+                <li>上の「コピー」→ エクスプローラーのアドレス欄に貼り付けて Enter（フォルダが開く）</li>
+                <li>そのExcelを、フォルダ内の <span className="text-emerald-700">タブExcelドロップ更新.bat</span> のアイコンにドラッグ＆ドロップ（bat をダブルクリックはNG）</li>
                 <li>黒い画面で 変換 → commit → push まで自動。「Done.」が出たら何かキーで閉じる</li>
                 <li>1〜2分でサイトに自動反映（Vercel）。開き直して「適用日」が新しい日付になっていればOK</li>
               </ol>

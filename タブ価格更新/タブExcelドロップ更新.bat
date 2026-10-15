@@ -1,6 +1,6 @@
 @echo off
 rem Drop the tab price xlsx onto this bat: xlsx -> public/data/tab_data.csv -> commit -> push
-cd /d "%~dp0"
+cd /d "%~dp0.."
 echo =========================================
 echo  Mente Jisseki - Tab Excel Update
 echo =========================================
@@ -25,9 +25,9 @@ if %errorlevel% == 0 (
 )
 git diff --stat -- public/data/tab_data.csv
 echo.
-powershell -NoProfile -Command "Get-Date -Format 'yyyy/MM/dd' | Out-File '%~dp0_date_tmp.txt' -Encoding ASCII -NoNewline"
-set /p TODAY=<"%~dp0_date_tmp.txt"
-del "%~dp0_date_tmp.txt" > nul 2>&1
+powershell -NoProfile -Command "Get-Date -Format 'yyyy/MM/dd' | Out-File '%TEMP%\_tab_date_tmp.txt' -Encoding ASCII -NoNewline"
+set /p TODAY=<"%TEMP%\_tab_date_tmp.txt"
+del "%TEMP%\_tab_date_tmp.txt" > nul 2>&1
 echo [2/4] Committing...
 git add public/data/tab_data.csv
 git commit -m "data: tab_data.csv updated %TODAY%"

@@ -2,7 +2,7 @@
 
 ## ① いま何を
 タブ価格Excelの反映をドラッグ一発化（push 済み）
-- `タブExcelドロップ更新.bat` にxlsxをドロップ → `scripts/tab-xlsx-to-csv.mjs` で tab_data.csv に変換 → commit → pull → push
+- `タブ価格更新\タブExcelドロップ更新.bat`（専用フォルダに bat 1個だけ）にxlsxをドロップ → `scripts/tab-xlsx-to-csv.mjs` で tab_data.csv に変換 → commit → pull → push
 - ⋯メニューに「タブ価格の更新手順」（bat の場所と使い方）を追加（push 済み）
 - 20261019適用のExcelを反映して push 済み（3,237件）
 
@@ -24,10 +24,11 @@
 - build 通過
 
 ## ② 次にやること
-- サイトで適用日が 2026年10月19日 になったか確認
+- 更新手順モーダルをフォルダパス＋コピーボタン方式に変更（commit 済み、未push）→ push
 - ブラウザで展開・印刷プレビュー確認 → commit → push → deploy
 
 ## ③ ハマり・未解決
+- WEBからローカルフォルダは開けない（file:// はブラウザがブロック）ので、パスをコピー→エクスプローラーに貼る方式
 - 掛率はブラウザ単位。共有したいなら public/data にJSONで持つ方式へ変更要
 - 適用日は出力日固定。登録部署が日付を変える運用なら要相談
 - ルート計画書ひな型はプランナーの resources/template.xlsx のコピー。プランナー側でひな型を変えたらこっちも差し替え
