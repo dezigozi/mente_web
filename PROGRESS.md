@@ -1,6 +1,11 @@
 # PROGRESS
 
 ## ① いま何を
+タブ価格Excelの反映をドラッグ一発化（push 済み）
+- `タブExcelドロップ更新.bat` にxlsxをドロップ → `scripts/tab-xlsx-to-csv.mjs` で tab_data.csv に変換 → commit → pull → push
+- ⋯メニューに「タブ価格の更新手順」（bat の場所と使い方）を追加（push 済み）
+- 20261019適用のExcelを反映して push 済み（3,237件）
+
 パターン2（工場→メンテ）の工場一覧で、工場行クリック＝その場でメンテ（リース会社）別の子行を展開に変更（工場回り用のA4印刷向け）。
 - `aggregateMenteChildrenByFactory`（aggregator.js）で工場→メンテ別を1回走査で集計、App → DashboardView に `factoryChildren` で渡す
 - 「全展開 / 全閉じ」ボタン（全展開はチェック有無に関係なく全工場）。子行クリックで従来の「分析名(大)別」へ。子行のメンテ名は工場列でなく各年度セルの左（受注数ラベルの位置）に出す
@@ -19,6 +24,7 @@
 - build 通過
 
 ## ② 次にやること
+- サイトで適用日が 2026年10月19日 になったか確認
 - ブラウザで展開・印刷プレビュー確認 → commit → push → deploy
 
 ## ③ ハマり・未解決
