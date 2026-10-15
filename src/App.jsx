@@ -6,7 +6,7 @@ import {
   Calendar, RefreshCcw, CheckCircle2, FileText, FileSpreadsheet,
   AlertCircle, Loader2, XCircle, Eye, EyeOff,
   CheckSquare, Square, Menu, X, Package, Search, ArrowUpDown,
-  MoreHorizontal, SlidersHorizontal, RotateCcw, MapPin,
+  MoreHorizontal, SlidersHorizontal, RotateCcw, MapPin, BookOpen,
 } from 'lucide-react';
 import { clearCache } from './utils/db';
 import { loadCsvData, loadCsvDataFull, generateFullDataCsvContent, loadTabData } from './utils/csvLoader';
@@ -1994,6 +1994,7 @@ const TabPriceView = ({ rows, leaseCompanies }) => {
   const [tabRates, setTabRates]     = useState(loadTabRates);
   const [showMenu, setShowMenu]     = useState(false);   // ⋯ メニュー
   const [showRateModal, setShowRateModal] = useState(false);
+  const [showUpdateGuide, setShowUpdateGuide] = useState(false);
 
   const updateTabRate = useCallback((lease, cat, raw) => {
     const v = Number(raw);
@@ -2558,6 +2559,10 @@ const TabPriceView = ({ rows, leaseCompanies }) => {
                       className="w-full flex items-center gap-2 px-4 py-3 text-xs font-black text-slate-700 hover:bg-emerald-50 hover:text-emerald-700 transition-colors">
                       <SlidersHorizontal size={14} /> 掛率設定
                     </button>
+                    <button onClick={() => { setShowMenu(false); setShowUpdateGuide(true); }}
+                      className="w-full flex items-center gap-2 px-4 py-3 text-xs font-black text-slate-700 hover:bg-emerald-50 hover:text-emerald-700 transition-colors border-t border-slate-100">
+                      <BookOpen size={14} /> タブ価格の更新手順
+                    </button>
                   </div>
                 </>
               )}
@@ -2565,6 +2570,47 @@ const TabPriceView = ({ rows, leaseCompanies }) => {
           </>
         )}
       </div>
+
+      {/* タブ価格の更新手順モーダル */}
+      {showUpdateGuide && (
+        <div className="fixed inset-0 bg-black/40 z-40 flex items-center justify-center p-4" onClick={() => setShowUpdateGuide(false)}>
+          <div className="bg-white rounded-3xl shadow-xl w-full max-w-lg p-6" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-2">
+                <BookOpen size={18} className="text-emerald-500" />
+                <h3 className="text-lg font-black text-slate-800">タブ価格の更新手順</h3>
+              </div>
+              <button onClick={() => setShowUpdateGuide(false)} className="text-slate-400 hover:text-slate-600">
+                <X size={18} />
+              </button>
+            </div>
+            <div className="space-y-3 text-sm text-slate-700">
+              <div>
+                <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">使うもの</p>
+                <p className="font-mono text-xs bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 break-all select-all">H:\dev\mente_web\タブExcelドロップ更新.bat</p>
+              </div>
+              <ol className="list-decimal pl-5 space-y-1.5 font-bold">
+                <li>リース会社タブ価格のExcel（tab_data シート）を最新にして保存</li>
+                <li>エクスプローラーで <span className="font-mono text-xs">H:\dev\mente_web</span> を開く</li>
+                <li>そのExcelを <span className="text-emerald-700">タブExcelドロップ更新.bat</span> のアイコンにドラッグ＆ドロップ</li>
+                <li>黒い画面で 変換 → commit → push まで自動。「Done.」が出たら何かキーで閉じる</li>
+                <li>1〜2分でサイトに自動反映（Vercel）。開き直して「適用日」が新しい日付になっていればOK</li>
+              </ol>
+              <ul className="text-[11px] text-slate-400 font-bold space-y-0.5">
+                <li>・列は見出し名（メンテ / 品番 / メーカーコード / TAB価格 / 適用日）で読むので、列の追加・並び替えはOK</li>
+                <li>・中身が前と同じなら「NO CHANGES」で何もせず終了</li>
+                <li>・このWEBの「登録用Excel」は未設定品番の登録依頼用。確定後のExcelを上の手順で反映する</li>
+              </ul>
+            </div>
+            <div className="mt-4 flex justify-end">
+              <button onClick={() => setShowUpdateGuide(false)}
+                className="px-4 py-2 rounded-xl bg-slate-700 text-white text-xs font-black hover:bg-slate-800 transition-colors">
+                閉じる
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* 掛率設定モーダル */}
       {showRateModal && (
