@@ -4162,6 +4162,15 @@ const NCS_JUDGE_LABEL = {
 const NcsResultTab = ({ index, lists, visitsByFactory, statusOf }) => {
   const [listFilter, setListFilter] = useState('ALL');
   const [onlyRevisit, setOnlyRevisit] = useState(false);
+  const [keyword, setKeyword] = useState('');
+  const [openKeys, setOpenKeys] = useState(new Set()); // 訪問履歴を開いている工場
+  const listName = useMemo(() => new Map(lists.map(l => [l.id, l.name])), [lists]);
+  const years = useMemo(() => index.fiscalYears.slice(-4), [index]);
+  const toggleOpen = key => setOpenKeys(prev => {
+    const n = new Set(prev);
+    n.has(key) ? n.delete(key) : n.add(key);
+    return n;
+  });
 
   const all = useMemo(() => {
     const listKeys = listFilter === 'ALL' ? null : new Set((lists.find(l => l.id === listFilter)?.factories || []).map(x => x.key));
@@ -4178,7 +4187,14 @@ const NcsResultTab = ({ index, lists, visitsByFactory, statusOf }) => {
     return out;
   }, [visitsByFactory, statusOf, index, lists, listFilter]);
 
-  const shown = onlyRevisit ? all.filter(x => x.judge === 'revisit') : all;
+  const shown = useMemo(() => {
+    const kw = norm(keyword).replace(/\s+/g, '');
+    return all.filter(x => {
+      if (onlyRevisit && x.judge !== 'revisit') return false;
+      if (kw && !norm(`${areaOf(x.address)}${x.key}${x.address}`).replace(/\s+/g, '').includes(kw)) return false;
+      return true;
+    });
+  }, [all, onlyRevisit, keyword]);
   const count = j => all.filter(x => x.judge === j).length;
 
   const handleExportCsv = () => {
@@ -4223,6 +4239,8 @@ const NcsResultTab = ({ index, lists, visitsByFactory, statusOf }) => {
           <option value="ALL">すべてのリスト</option>
           {lists.map(l => <option key={l.id} value={l.id}>{l.name}</option>)}
         </select>
+        <input value={keyword} onChange={e => setKeyword(e.target.value)} placeholder="エリア・工場名で絞り込み"
+          className="px-4 py-2.5 rounded-2xl border border-slate-200 bg-white text-sm font-bold text-slate-700 focus:outline-none focus:ring-2 focus:ring-emerald-300" />
         <label className="inline-flex items-center gap-2 text-xs font-black text-slate-600 cursor-pointer">
           <input type="checkbox" checked={onlyRevisit} onChange={e => setOnlyRevisit(e.target.checked)} className="accent-rose-500" />
           再訪問候補だけ
@@ -4250,14 +4268,24 @@ const NcsResultTab = ({ index, lists, visitsByFactory, statusOf }) => {
             {shown.map(({ key, st, judge, address }) => {
               const s = st.stats;
               const jl = NCS_JUDGE_LABEL[judge];
+              const isOpen = openKeys.has(key);
+              // 訪問と NCS 初受注を日付順に並べた履歴
+              const history = st.vs.map(v => ({ d: dateNum(v.date), v }));
+              if (s?.ncsFirst) history.push({ d: s.ncsFirst, order: true });
+              history.sort((a, b) => a.d - b.d || (a.order ? 1 : -1));
               return (
-                <tr key={key} className="border-b border-slate-100 align-top hover:bg-emerald-50/40">
+                <React.Fragment key={key}>
+                <tr onClick={() => toggleOpen(key)}
+                  className={`border-b border-slate-100 align-top cursor-pointer hover:bg-emerald-50/40 ${isOpen ? 'bg-emerald-50/40' : ''}`}>
                   <td className="px-3 py-3 text-center whitespace-nowrap">
                     <span className={`inline-block px-2 py-1 rounded-lg text-[10px] font-black ${jl.cls}`}>{jl.label}</span>
                   </td>
                   <td className="px-3 py-3 min-w-[220px]">
-                    <div className="font-black text-slate-800">{key}</div>
-                    <div className="text-xs text-slate-500">{address}</div>
+                    <div className="flex items-center gap-1 font-black text-slate-800">
+                      {isOpen ? <ChevronDown size={14} className="text-emerald-600 shrink-0" /> : <ChevronRight size={14} className="text-slate-300 shrink-0" />}
+                      {key}
+                    </div>
+                    <div className="text-xs text-slate-500">{areaOf(address) && <span className="font-bold mr-2">{areaOf(address)}</span>}{address}</div>
                     {st.last.memo && <div className="text-xs text-slate-400 mt-1 whitespace-pre-wrap">{st.last.memo}</div>}
                   </td>
                   <td className="px-3 py-3 text-xs text-center whitespace-nowrap font-bold text-slate-600">
@@ -4280,11 +4308,38 @@ const NcsResultTab = ({ index, lists, visitsByFactory, statusOf }) => {
                     </div>
                   </td>
                 </tr>
+                {isOpen && (
+                  <tr className="border-b border-slate-100 bg-slate-50/60">
+                    <td colSpan={7} className="px-6 py-3">
+                      <div className="text-[10px] font-black text-slate-400 tracking-widest mb-2">訪問履歴（{st.vs.length}回）</div>
+                      <div className="space-y-1.5">
+                        {history.map((h, i) => h.order ? (
+                          <div key={`o${i}`} className="flex items-center gap-3 text-xs">
+                            <div className="w-24 font-black text-emerald-700">{fmtDateNum(h.d)}</div>
+                            <span className="inline-block px-2 py-0.5 rounded-lg text-[10px] font-black bg-emerald-600 text-white">NCS初受注</span>
+                            <span className="text-emerald-700 font-bold">訪問後 NCS {s.ncsQty}件 / ¥{Math.round(s.ncsSales).toLocaleString()}</span>
+                          </div>
+                        ) : (
+                          <div key={h.v.id} className="flex items-start gap-3 text-xs">
+                            <div className="w-24 font-black text-slate-700">{h.v.date.replace(/-/g, '/')}</div>
+                            <div className="w-16"><NcsResultBadge result={h.v.result} /></div>
+                            <div className="flex-1 text-slate-600 whitespace-pre-wrap">{h.v.memo}</div>
+                            <div className="text-[10px] font-bold text-slate-400 whitespace-nowrap">{listName.get(h.v.listId) || ''}</div>
+                          </div>
+                        ))}
+                      </div>
+                      <div className="text-[10px] font-black text-slate-400 tracking-widest mt-4 mb-2">実績（受注数）</div>
+                      <NcsFactoryYears f={index.factories.get(key)} years={years} />
+                    </td>
+                  </tr>
+                )}
+                </React.Fragment>
               );
             })}
             {!shown.length && (
               <tr><td colSpan={7} className="px-3 py-10 text-center text-slate-400 font-bold">
-                {all.length ? '再訪問候補はいまないよ' : 'まだ訪問記録がないよ。「訪問リスト・記録」で記録してね'}
+                {!all.length ? 'まだ訪問記録がないよ。「訪問リスト・記録」で記録してね'
+                  : onlyRevisit && !keyword ? '再訪問候補はいまないよ' : '条件に合う工場がないよ'}
               </td></tr>
             )}
           </tbody>
