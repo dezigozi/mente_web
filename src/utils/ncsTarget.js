@@ -183,6 +183,17 @@ export function buildPostVisitStats(rows, itemOk, targets) {
   return out;
 }
 
+/**
+ * 住所からエリア（市区町村）を出す: 宮城県仙台市青葉区木町通1-5-12 → 仙台市青葉区
+ * 政令市は区まで、それ以外は市 / 郡＋町村 / 東京23区。拾えなければ空
+ */
+export function areaOf(address) {
+  const a = String(address ?? '').normalize('NFKC').trim().replace(/^(東京都|北海道|京都府|大阪府|.{2,3}県)/, '');
+  const m = a.match(/^(.{1,6}?市市?.{1,4}?区)/) || a.match(/^(.{1,6}?市市?)/) || a.match(/^(.{1,5}?郡.{1,5}?[町村])/)
+    || a.match(/^(.{1,4}?区)/) || a.match(/^(.{1,5}?[町村])/);
+  return m ? m[1] : '';
+}
+
 /** 'YYYY-MM-DD' 同士の日数差（b - a） */
 export function daysBetween(aNum, bNum) {
   const toDate = n => new Date(Math.floor(n / 10000), Math.floor(n / 100) % 100 - 1, n % 100);
