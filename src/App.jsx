@@ -17,7 +17,10 @@ import {
   NCS, buildFactoryIndex, latestCompleteFiscalYear, buildNcsTargets, splitFy, topOrderers,
   buildPostVisitStats, dateNum, fmtDateNum, daysBetween,
 } from './utils/ncsTarget';
-import { listLists, saveList, deleteList, listVisits, saveVisit, deleteVisit, exportAll, importAll, newId } from './utils/visitStore';
+import {
+  loadAll, saveList, deleteList, saveVisit, deleteVisit, exportAll, importAll, newId,
+  storeMode, getShareKey, setShareKey, localLeftovers, migrateLocalToShared,
+} from './utils/visitStore';
 import areaCodes from './data/areaCodes.json';
 /**
  * メンテ実績ダッシュ（単一ファイル構成）
@@ -3446,21 +3449,55 @@ const NcsVisitView = ({ rows, leaseCompanies }) => {
   const todayNum = dateNum(ncsTodayIso());
 
   // ---- 保存データ（訪問リスト・訪問記録） ----
+  const [mode, setMode] = useState(storeMode); // 'shared' | 'needKey' | 'local'
   const [lists, setLists] = useState([]);
   const [visits, setVisits] = useState([]);
   const [storeError, setStoreError] = useState(null);
+  const [storeLoading, setStoreLoading] = useState(false);
+  const [leftovers, setLeftovers] = useState(null); // 共有前にこのブラウザだけに保存した分
+  const [keyInput, setKeyInput] = useState('');
   const reload = useCallback(async () => {
+    if (storeMode() === 'needKey') return;
+    setStoreLoading(true);
     try {
-      const [l, v] = await Promise.all([listLists(), listVisits()]);
+      const { lists: l, visits: v } = await loadAll();
       setLists(l);
       setVisits(v);
       setStoreError(null);
     } catch (e) {
       console.error(e);
+      if (e?.code === 'unauthorized') {
+        setShareKey('');
+        setMode('needKey');
+      }
       setStoreError(e?.message || String(e));
+    } finally {
+      setStoreLoading(false);
     }
   }, []);
-  useEffect(() => { reload(); }, [reload]);
+  useEffect(() => { reload(); }, [reload, mode]);
+  useEffect(() => {
+    if (mode !== 'shared') { setLeftovers(null); return; }
+    localLeftovers().then(d => setLeftovers(d.lists.length || d.visits.length ? d : null));
+  }, [mode]);
+
+  const handleSetKey = () => {
+    if (!keyInput.trim()) return;
+    setShareKey(keyInput);
+    setKeyInput('');
+    setStoreError(null);
+    setMode(storeMode());
+  };
+  const handleMigrate = async () => {
+    if (!window.confirm(`このブラウザだけに保存していた 訪問リスト ${leftovers.lists.length}件・訪問記録 ${leftovers.visits.length}件 を共有に移す？`)) return;
+    try {
+      await migrateLocalToShared();
+      setLeftovers(null);
+      await reload();
+    } catch (e) {
+      alert(`移せなかったよ: ${e?.message || e}`);
+    }
+  };
 
   /** 工場 → 訪問記録（日付の古い順） */
   const visitsByFactory = useMemo(() => {
@@ -3534,12 +3571,15 @@ const NcsVisitView = ({ rows, leaseCompanies }) => {
   return (
     <div className="space-y-6 animate-fade-in-up">
       {/* タイトル */}
-      <div className="bg-gradient-to-r from-slate-800 to-slate-700 rounded-3xl p-6 text-white">
+      <div className="bg-gradient-to-r from-slate-800 to-slate-700 rounded-3xl p-6 text-white no-print">
         <div className="flex flex-wrap items-start gap-3">
           <div>
             <div className="flex items-center gap-3 mb-1">
               <MapPin size={24} className="text-emerald-400" />
               <h2 className="text-2xl font-black tracking-tight">NCS訪問管理</h2>
+              <span className={`px-2 py-0.5 rounded-lg text-[10px] font-black ${mode === 'shared' ? 'bg-emerald-500/20 text-emerald-300' : 'bg-white/10 text-slate-300'}`}>
+                {mode === 'local' ? 'このブラウザだけに保存' : '共有：特販部_営業訪問ログ'}
+              </span>
             </div>
             <p className="text-slate-400 text-sm font-bold">
               ほかのリース会社では受注があるのに NCS だけ無い工場を拾って、訪問と訪問後の受注を追う
@@ -3549,6 +3589,12 @@ const NcsVisitView = ({ rows, leaseCompanies }) => {
             </p>
           </div>
           <div className="ml-auto flex gap-2 no-print">
+            {mode === 'shared' && (
+              <button onClick={reload} disabled={storeLoading} title="ほかの人の記録も取り込み直す"
+                className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-black bg-white/10 hover:bg-white/20 disabled:opacity-50">
+                <RefreshCcw size={14} className={storeLoading ? 'animate-spin' : ''} /> 再読込
+              </button>
+            )}
             <button onClick={handleExportJson}
               className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-black bg-white/10 hover:bg-white/20">
               <Download size={14} /> バックアップ
@@ -3561,9 +3607,42 @@ const NcsVisitView = ({ rows, leaseCompanies }) => {
           </div>
         </div>
         <p className="text-slate-500 text-[11px] mt-3">
-          訪問リスト・訪問記録はこのブラウザに保存しているよ。ときどき「バックアップ」で JSON を残しておいてね。
+          {mode === 'local'
+            ? '訪問リスト・訪問記録はこのブラウザに保存しているよ。ときどき「バックアップ」で JSON を残しておいてね。'
+            : <>訪問リスト・訪問記録はスプレッドシートでみんなと共有してるよ。
+                <button onClick={() => { if (window.confirm('共有キーを入れ直す？')) { setShareKey(''); setMode('needKey'); } }}
+                  className="ml-2 underline hover:text-slate-300">共有キーを変える</button></>}
         </p>
       </div>
+
+      {mode === 'needKey' && (
+        <div className="bg-white rounded-3xl shadow-sm border border-emerald-200 p-6 space-y-3">
+          <div className="font-black text-slate-800">共有キーを入れてね</div>
+          <div className="text-xs font-bold text-slate-500">訪問データはみんなで共有してるよ。たかたかから聞いた共有キーを1回入れれば、このブラウザで使えるようになる。</div>
+          <div className="flex flex-wrap gap-2">
+            <input value={keyInput} onChange={e => setKeyInput(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') handleSetKey(); }}
+              placeholder="共有キー" type="password"
+              className="px-4 py-2.5 rounded-2xl border border-slate-200 bg-white text-sm font-bold text-slate-700 focus:outline-none focus:ring-2 focus:ring-emerald-300" />
+            <button onClick={handleSetKey} className="px-5 py-2.5 rounded-2xl text-xs font-black bg-green-900 text-white hover:bg-emerald-600">使いはじめる</button>
+          </div>
+        </div>
+      )}
+
+      {leftovers && (
+        <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 flex flex-wrap items-center gap-3 text-amber-800 no-print">
+          <AlertCircle size={18} />
+          <span className="font-bold text-sm">
+            このブラウザだけに保存した訪問データ（リスト {leftovers.lists.length}件・記録 {leftovers.visits.length}件）があるよ。
+          </span>
+          <button onClick={handleMigrate} className="ml-auto px-4 py-2 rounded-xl text-xs font-black bg-amber-600 text-white hover:bg-amber-700">共有に移す</button>
+        </div>
+      )}
+
+      {storeLoading && (
+        <div className="flex items-center gap-2 text-xs font-bold text-slate-500 no-print">
+          <Loader2 size={14} className="animate-spin" /> 訪問データを読み込み中…
+        </div>
+      )}
 
       {storeError && (
         <div className="bg-rose-50 border border-rose-200 rounded-2xl p-4 flex items-center gap-3 text-rose-700">
@@ -3588,6 +3667,7 @@ const NcsVisitView = ({ rows, leaseCompanies }) => {
       )}
       {tab === 'list' && (
         <NcsListTab
+          index={index}
           lists={lists} activeListId={activeListId} setActiveListId={setActiveListId}
           statusOf={statusOf} reload={reload}
         />
@@ -3841,10 +3921,66 @@ const NcsTargetTab = ({ index, leaseCompanies, judgeFY, setJudgeFY, lists, statu
 };
 
 /** タブ2: 訪問リスト・記録 */
-const NcsListTab = ({ lists, activeListId, setActiveListId, statusOf, reload }) => {
+/** 前年比（工場別 年次実績比較と同じ表示。前年0は出さない） */
+const NcsYoY = ({ curr, prev }) => {
+  const y = calcYoY(curr, prev);
+  if (y == null) return null;
+  const n = Number(y);
+  return <span className={`ml-1 text-[10px] font-bold ${n >= 0 ? 'text-emerald-600' : 'text-rose-500'}`}>{n >= 0 ? '↗' : '↘'}{n}%</span>;
+};
+
+/** 工場1件の年度別 受注数＋メンテ別内訳（訪問リストの各工場の下に出す） */
+const NcsFactoryYears = ({ f, years }) => {
+  if (!f) return <div className="text-xs text-slate-400 font-bold">この工場の実績データが見つからないよ</div>;
+  const qty = (fy, l) => f.byFy.get(fy)?.get(l) || 0;
+  const total = fy => { let t = 0; f.byFy.get(fy)?.forEach(q => { t += q; }); return t; };
+  const sum = new Map();
+  years.forEach(fy => f.byFy.get(fy)?.forEach((q, l) => sum.set(l, (sum.get(l) || 0) + q)));
+  const leases = [...sum].filter(([, q]) => q).sort((a, b) => b[1] - a[1]).map(([l]) => l);
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-xs border border-slate-100 rounded-xl">
+        <thead className="bg-green-900 text-white">
+          <tr>
+            <th className="px-3 py-1.5 text-left font-black w-28"></th>
+            {years.map(fy => (
+              <th key={fy} className="px-3 py-1.5 font-black text-right whitespace-nowrap">
+                {fy}年度<span className="ml-1 text-[9px] font-bold text-green-300">{fy}/10〜{fy + 1}/9</span>
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          <tr className="bg-emerald-50/60 border-b border-slate-100">
+            <td className="px-3 py-1.5 font-black text-emerald-700">受注数</td>
+            {years.map(fy => (
+              <td key={fy} className="px-3 py-1.5 text-right font-black text-slate-800 whitespace-nowrap">
+                {total(fy) || ''}<NcsYoY curr={total(fy)} prev={total(fy - 1)} />
+              </td>
+            ))}
+          </tr>
+          {leases.map(l => (
+            <tr key={l} className={`border-b border-slate-50 ${l === NCS ? 'bg-rose-50/60' : ''}`}>
+              <td className={`px-3 py-1 font-black ${l === NCS ? 'text-rose-600' : 'text-slate-600'}`}>{l}</td>
+              {years.map(fy => (
+                <td key={fy} className="px-3 py-1 text-right font-bold text-slate-700 whitespace-nowrap">
+                  {qty(fy, l) || ''}<NcsYoY curr={qty(fy, l)} prev={qty(fy - 1, l)} />
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+};
+
+const NcsListTab = ({ index, lists, activeListId, setActiveListId, statusOf, reload }) => {
   const list = lists.find(l => l.id === activeListId) || lists[0] || null;
   const [openKey, setOpenKey] = useState(null);      // 入力フォームを開いている工場
   const [expanded, setExpanded] = useState(new Set()); // 履歴を開いている工場
+  const [showYears, setShowYears] = useState(true);   // 年次実績比較を出す
+  const years = useMemo(() => index.fiscalYears.slice(-4), [index]);
 
   const toggleExpand = key => setExpanded(prev => {
     const n = new Set(prev);
@@ -3870,22 +4006,26 @@ const NcsListTab = ({ lists, activeListId, setActiveListId, statusOf, reload }) 
       alert(`記録の保存に失敗したよ: ${e?.message || e}`);
     }
   };
-  const handleDeleteVisit = async (v) => {
+  const run = async (fn) => {
+    try {
+      await fn();
+      await reload();
+    } catch (e) {
+      alert(`失敗したよ: ${e?.message || e}`);
+    }
+  };
+  const handleDeleteVisit = (v) => {
     if (!window.confirm(`${v.date.replace(/-/g, '/')} の訪問記録を消す？`)) return;
-    await deleteVisit(v.id);
-    await reload();
+    run(() => deleteVisit(v.id));
   };
-  const handleRemoveFactory = async (entry) => {
+  const handleRemoveFactory = (entry) => {
     if (!window.confirm(`「${entry.key}」をこのリストから外す？（訪問記録は残るよ）`)) return;
-    await saveList({ ...list, factories: list.factories.filter(x => x.key !== entry.key) });
-    await reload();
+    run(() => saveList({ ...list, factories: list.factories.filter(x => x.key !== entry.key) }));
   };
-  const handleDeleteList = async () => {
+  const handleDeleteList = () => {
     const n = list.factories.reduce((s, x) => s + (statusOf(x.key)?.vs.filter(v => v.listId === list.id).length || 0), 0);
     if (!window.confirm(`リスト「${list.name}」を消す？${n ? `\nこのリストで付けた訪問記録 ${n}件も一緒に消えるよ。` : ''}`)) return;
-    await deleteList(list.id);
-    setActiveListId(null);
-    await reload();
+    run(async () => { await deleteList(list.id); setActiveListId(null); });
   };
   const handleRouteExport = async () => {
     try {
@@ -3918,7 +4058,15 @@ const NcsListTab = ({ lists, activeListId, setActiveListId, statusOf, reload }) 
             {list.factories.length}工場 / 訪問済み {visitedCount} / 作成 {String(list.createdAt).slice(0, 10).replace(/-/g, '/')}
           </div>
         </div>
-        <div className="ml-auto flex gap-2 no-print">
+        <div className="ml-auto flex flex-wrap gap-2 no-print">
+          <label className="self-center inline-flex items-center gap-2 text-xs font-black text-slate-600 cursor-pointer mr-1">
+            <input type="checkbox" checked={showYears} onChange={e => setShowYears(e.target.checked)} className="accent-emerald-600" />
+            年次実績を表示
+          </label>
+          <button onClick={() => window.print()} disabled={!list.factories.length}
+            className="flex items-center gap-1.5 px-4 py-2.5 rounded-2xl text-xs font-black border border-green-900 text-green-900 hover:bg-green-50 disabled:opacity-40">
+            <FileText size={14} /> 訪問資料を印刷
+          </button>
           <button onClick={handleRouteExport} disabled={!list.factories.length}
             className="flex items-center gap-1.5 px-4 py-2.5 rounded-2xl text-xs font-black border border-green-900 text-green-900 hover:bg-green-50 disabled:opacity-40">
             <FileSpreadsheet size={14} /> ルート計画書Excel
@@ -3936,7 +4084,7 @@ const NcsListTab = ({ lists, activeListId, setActiveListId, statusOf, reload }) 
           const isOpen = openKey === x.key;
           const showHist = expanded.has(x.key) || isOpen;
           return (
-            <div key={x.key} className="bg-white rounded-3xl shadow-sm border border-slate-100 p-5 space-y-3">
+            <div key={x.key} className="bg-white rounded-3xl shadow-sm border border-slate-100 p-5 space-y-3 break-inside-avoid">
               <div className="flex flex-wrap items-start gap-4">
                 <div className="text-xs font-black text-slate-300 w-6 pt-1">{i + 1}</div>
                 <div className="flex-1 min-w-[240px]">
@@ -3980,7 +4128,9 @@ const NcsListTab = ({ lists, activeListId, setActiveListId, statusOf, reload }) 
                 </div>
               </div>
 
-              {isOpen && <NcsVisitForm onSave={form => handleSaveVisit(x, form)} onCancel={() => setOpenKey(null)} />}
+              {showYears && <NcsFactoryYears f={index.factories.get(x.key)} years={years} />}
+
+              {isOpen && <div className="no-print"><NcsVisitForm onSave={form => handleSaveVisit(x, form)} onCancel={() => setOpenKey(null)} /></div>}
 
               {showHist && st && (
                 <div className="border-t border-slate-100 pt-3 space-y-2">
