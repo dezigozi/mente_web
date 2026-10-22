@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   buildLeaseReportIndex, listClients, defaultClientSelection, summarizeFactories, summarizeClients,
-  prevBase, fiscalYearApr,
+  prevBase, fiscalYearApr, shortClientName,
 } from './leaseReport.js';
 import { parseCsv } from './csvParse.js';
 
@@ -15,6 +15,15 @@ describe('fiscalYearApr', () => {
   it('3月は前年度・4月は当年度', () => {
     expect(fiscalYearApr(2025, 3)).toBe(2024);
     expect(fiscalYearApr(2025, 4)).toBe(2025);
+  });
+});
+
+describe('shortClientName', () => {
+  it('会社名を外して課名だけ', () => {
+    expect(shortClientName('オリックス自動車(株)名古屋フロント課')).toBe('名古屋フロント課');
+    expect(shortClientName('ｵﾘｯｸｽ自動車(株) ｻｰﾋﾞｽｶﾝﾊﾟﾆｰ福岡支店')).toBe('サービスカンパニー福岡支店');
+    expect(shortClientName('日本カーソリューションズ㈱ 東日本サービス部東京チーム')).toBe('東日本サービス部東京チーム');
+    expect(shortClientName('MAL本社')).toBe('MAL本社');
   });
 });
 

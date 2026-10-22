@@ -24,6 +24,11 @@ describe('LeaseReportView', () => {
     expect(screen.getByText('A工場')).toBeTruthy();
     expect(screen.queryByText('B工場')).toBeNull();
     expect(screen.getByText(/西日本（大阪・広島・高松・福岡・名古屋）/)).toBeTruthy();
+    // 合計行・得意先の列・説明文は出さない
+    expect(screen.queryByText('合計')).toBeNull();
+    expect(screen.queryByRole('columnheader', { name: '得意先' })).toBeNull();
+    expect(screen.queryByText(/数量（本数）/)).toBeNull();
+    expect(screen.getByRole('button', { name: '大阪フロント課' })).toBeTruthy();
   });
 
   it('「全部」で東京の工場も出る。行を開くと品目と分析名(中)の内訳', () => {
@@ -46,7 +51,8 @@ describe('LeaseReportView', () => {
     render(<LeaseReportView rows={rows} />);
     fireEvent.click(screen.getByRole('button', { name: /支店別/ }));
     const table = screen.getByRole('table');
-    expect(within(table).getAllByText('オリックス自動車(株)大阪フロント課').length).toBe(1);
+    expect(within(table).getAllByText('大阪フロント課').length).toBe(1);
+    expect(within(table).queryByText(/オリックス自動車/)).toBeNull();
     expect(within(table).getAllByText('スターター').length).toBeGreaterThan(0);
     // 2025年度 7本 vs 2024年度 2本 → +250%
     expect(within(table).getAllByText('↗250%').length).toBeGreaterThan(0);
