@@ -128,6 +128,9 @@ function parseDate(dateValue) {
 
   if (typeof dateValue === 'string' && dateValue) {
     const datePart = dateValue.split(' ')[0].trim();
+    // 「2026年3月」「2026年3月5日」（アプリの CSV 出力が年月をこの形で書く）
+    const jp = datePart.match(/^(\d{4})年(\d{1,2})月(?:\d{1,2}日)?$/);
+    if (jp) return fiscalYearMonthFromCalendar(Number(jp[1]), Number(jp[2]));
     if (/^\d{4}$/.test(datePart)) {
       const y = Number(datePart);
       if (y >= 1980 && y <= 2100) {
@@ -189,6 +192,7 @@ export function parseCsv(csv, { keepRaw = true } = {}) {
   const COL_CODE   = idx['品番']          ?? 31;
   const COL_NAME   = idx['商品名']        ?? 32;
   const COL_ITEM   = idx['分析名(大)']    ?? 33;
+  const COL_ITEM_MID = idx['分析名(中)']  ?? 34;
   const COL_PRICE  = idx['単価']          ?? 39;
   const COL_QTY    = idx['数量']          ?? 40;
   const COL_PROFIT = idx['粗利']          ?? 41;
@@ -263,6 +267,8 @@ export function parseCsv(csv, { keepRaw = true } = {}) {
 
   // 第3パス: 行データを構築
   const rows = [];
+  let badDateCount = 0;
+  const badDateSamples = new Set();
   for (let i = 1; i < lines.length; i++) {
     const vals = parseCSVLine(lines[i]);
 
@@ -292,7 +298,11 @@ export function parseCsv(csv, { keepRaw = true } = {}) {
     }
 
     const dateInfo = parseDate(dateVal);
-    if (!dateInfo) continue;
+    if (!dateInfo) {
+      badDateCount++;
+      if (badDateSamples.size < 5) badDateSamples.add(String(dateVal ?? ''));
+      continue;
+    }
 
     const ok = textGroupKey(orderClientRaw);
     const orderClient = ok
@@ -340,6 +350,7 @@ export function parseCsv(csv, { keepRaw = true } = {}) {
       productCode,
       productName,
       item: item || '(未分類)',
+      itemMid: vals[COL_ITEM_MID]?.trim() || '',
       slipNo:       vals[COL_SLIP]?.trim()      || '',
       slipType:     vals[COL_SLIP_TYPE]?.trim() || '',
       receiverName: vals[COL_RECV_NAME]?.trim() || '',
@@ -350,6 +361,10 @@ export function parseCsv(csv, { keepRaw = true } = {}) {
       profit,
       ...(keepRaw ? { rawRow: [...vals] } : {}),
     });
+  }
+
+  if (badDateCount) {
+    console.warn(`[csvParse] 納品日が読めず ${badDateCount} 行をスキップ（例: ${[...badDateSamples].join(' / ')}）`);
   }
 
   const yearsSet = new Set();
