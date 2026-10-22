@@ -23,7 +23,7 @@ import {
 } from './utils/visitStore';
 import {
   REBUILD_ITEMS, WEST_ORIX_CLIENT_KEYWORDS, ORIX_LEASE, buildLeaseReportIndex, listClients,
-  defaultClientSelection, summarizeFactories, summarizeClients, prevBase,
+  defaultClientSelection, summarizeFactories, summarizeClients, prevBase, shortClientName,
 } from './utils/leaseReport';
 import areaCodes from './data/areaCodes.json';
 /**
@@ -1447,7 +1447,7 @@ const LeaseReportView = memo(({ rows }) => {
     if (!factorySum) return [];
     const q = norm(query);
     if (!q) return factorySum.rows;
-    return factorySum.rows.filter(f => norm(`${f.key} ${f.pref} ${f.address} ${f.clients.join(' ')}`).includes(q));
+    return factorySum.rows.filter(f => norm(`${f.key} ${f.pref} ${f.address}`).includes(q));
   }, [factorySum, query]);
 
   const scopeText = clients.size === 0
@@ -1462,16 +1462,16 @@ const LeaseReportView = memo(({ rows }) => {
     const yVals = s => years.flatMap(fy => [s.byFy.get(fy) || 0, leaseYoYText(s, fy, info)]);
     const out = [];
     if (tab === 'factory') {
-      out.push(line(['工場', '都道府県', '得意先', '品目', ...yCols]));
+      out.push(line(['工場', '都道府県', '品目', ...yCols]));
       for (const f of shownFactories) {
-        out.push(line([f.key, f.pref, f.clients.join(' / '), '計', ...yVals(f.total)]));
-        REBUILD_ITEMS.forEach(it => out.push(line([f.key, f.pref, f.clients.join(' / '), it, ...yVals(f.items.get(it))])));
+        out.push(line([f.key, f.pref, '計', ...yVals(f.total)]));
+        REBUILD_ITEMS.forEach(it => out.push(line([f.key, f.pref, it, ...yVals(f.items.get(it))])));
       }
     } else {
       out.push(line(['得意先', '品目', ...yCols]));
       for (const c of clientSum.rows) {
-        out.push(line([c.client, '計', ...yVals(c.total)]));
-        REBUILD_ITEMS.forEach(it => out.push(line([c.client, it, ...yVals(c.items.get(it))])));
+        out.push(line([shortClientName(c.client), '計', ...yVals(c.total)]));
+        REBUILD_ITEMS.forEach(it => out.push(line([shortClientName(c.client), it, ...yVals(c.items.get(it))])));
       }
     }
     const kind = tab === 'factory' ? '工場別リビルト実績' : '支店別オルタスタコンプ';
@@ -1492,21 +1492,6 @@ const LeaseReportView = memo(({ rows }) => {
   );
   const chipCls = on => `px-3 py-1.5 rounded-xl text-xs font-black border transition-colors ${
     on ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white text-slate-500 border-slate-200 hover:border-emerald-300'}`;
-
-  const totalRows = (s) => (
-    <>
-      <tr className="bg-emerald-50 border-b border-slate-100">
-        <td className="px-3 py-2 font-black text-emerald-700" colSpan={tab === 'factory' ? 3 : 1}>合計</td>
-        {years.map(fy => <LeaseQtyTd key={fy} series={s.total} fy={fy} info={info} className="font-black text-slate-800" />)}
-      </tr>
-      {REBUILD_ITEMS.map(it => (
-        <tr key={it} className="bg-emerald-50/40 border-b border-slate-100">
-          <td className="px-3 py-1.5 pl-6 font-bold text-emerald-700" colSpan={tab === 'factory' ? 3 : 1}>{LEASE_REPORT_ITEM_LABEL[it]}</td>
-          {years.map(fy => <LeaseQtyTd key={fy} series={s.totalItems.get(it)} fy={fy} info={info} className="font-bold text-slate-700" />)}
-        </tr>
-      ))}
-    </>
-  );
 
   return (
     <div className="space-y-6 animate-fade-in-up">
@@ -1538,7 +1523,7 @@ const LeaseReportView = memo(({ rows }) => {
           </select>
           {tab === 'factory' && (
             <input value={query} onChange={e => { setQuery(e.target.value); setRenderLimit(LEASE_REPORT_RENDER_STEP); }}
-              placeholder="工場名・県・得意先で絞り込み"
+              placeholder="工場名・県で絞り込み"
               className="ml-auto w-64 px-4 py-2.5 rounded-2xl border border-slate-200 bg-white text-sm font-bold text-slate-700 focus:outline-none focus:ring-2 focus:ring-emerald-300" />
           )}
         </div>
@@ -1552,20 +1537,16 @@ const LeaseReportView = memo(({ rows }) => {
           <span className="w-px h-5 bg-slate-200 mx-1" />
           {clientList.map(c => (
             <button key={c.name} onClick={() => toggleClient(c.name)} className={chipCls(clients.has(c.name))}>
-              {c.name}<span className="ml-1 text-[10px] opacity-70">{c.qty.toLocaleString()}</span>
+              {shortClientName(c.name)}
             </button>
           ))}
-        </div>
-        <div className="text-[11px] font-bold text-slate-400">
-          数量（本数）/ 対象：分析名(大) がオルタネーター・スターター・コンプレッサー（MAX・他社リビルト等すべて）/ 年度は4月〜3月
-          {info.partial && ` / ${info.lastFy}年度は${info.lastMonth}月までの途中。前年比は前年の同じ月までと比べてるよ`}
         </div>
       </div>
 
       <div className="bg-white rounded-3xl shadow-sm border border-slate-100 p-4 md:p-6">
         <div className="mb-3 font-black text-slate-800">
           {leaseReportLabel(lease)}　{tab === 'factory' ? '工場別リビルト実績' : '支店別 オルタ・スターター・コンプレッサー利用'}
-          <span className="ml-2 text-xs font-bold text-slate-500">{scopeText}{tab === 'factory' && ` / ${shownFactories.length}工場`}</span>
+          <span className="ml-2 text-xs font-bold text-slate-500">{scopeText}</span>
         </div>
         <div className="overflow-x-auto">
           {tab === 'factory' ? (
@@ -1574,11 +1555,9 @@ const LeaseReportView = memo(({ rows }) => {
                 <tr>
                   <th className="px-3 py-2 text-left font-black">工場</th>
                   <th className="px-3 py-2 text-left font-black whitespace-nowrap">県</th>
-                  <th className="px-3 py-2 text-left font-black">得意先</th>
                   {years.map(fy => <LeaseYearTh key={fy} fy={fy} info={info} />)}
                 </tr>
               </thead>
-              <tbody>{totalRows(factorySum)}</tbody>
               {shownFactories.slice(0, renderLimit).map(f => {
                 const open = openKey === f.key;
                 return (
@@ -1592,18 +1571,17 @@ const LeaseReportView = memo(({ rows }) => {
                         </span>
                       </td>
                       <td className="px-3 py-1.5 font-bold text-slate-500 whitespace-nowrap">{f.pref}</td>
-                      <td className="px-3 py-1.5 font-bold text-slate-500">{f.clients.join(' / ')}</td>
                       {years.map(fy => <LeaseQtyTd key={fy} series={f.total} fy={fy} info={info} className="font-black text-slate-800" />)}
                     </tr>
                     {open && REBUILD_ITEMS.map(it => (
                       <React.Fragment key={it}>
                         <tr className="bg-slate-50 border-b border-slate-100">
-                          <td className="px-3 py-1 pl-8 font-black text-emerald-700" colSpan={3}>{LEASE_REPORT_ITEM_LABEL[it]}</td>
+                          <td className="px-3 py-1 pl-8 font-black text-emerald-700" colSpan={2}>{LEASE_REPORT_ITEM_LABEL[it]}</td>
                           {years.map(fy => <LeaseQtyTd key={fy} series={f.items.get(it)} fy={fy} info={info} className="font-bold text-slate-700" />)}
                         </tr>
                         {f.mids.filter(m => m.item === it).map(m => (
                           <tr key={m.mid} className="bg-slate-50/50 border-b border-slate-50">
-                            <td className="px-3 py-1 pl-14 font-bold text-slate-500" colSpan={3}>{m.mid}</td>
+                            <td className="px-3 py-1 pl-14 font-bold text-slate-500" colSpan={2}>{m.mid}</td>
                             {years.map(fy => <LeaseQtyTd key={fy} series={m.series} fy={fy} info={info} className="text-slate-500" />)}
                           </tr>
                         ))}
@@ -1613,7 +1591,7 @@ const LeaseReportView = memo(({ rows }) => {
                 );
               })}
               {!shownFactories.length && (
-                <tbody><tr><td colSpan={3 + years.length} className="px-3 py-10 text-center text-slate-400 font-bold">条件に合う工場がないよ</td></tr></tbody>
+                <tbody><tr><td colSpan={2 + years.length} className="px-3 py-10 text-center text-slate-400 font-bold">条件に合う工場がないよ</td></tr></tbody>
               )}
             </table>
           ) : (
@@ -1624,11 +1602,10 @@ const LeaseReportView = memo(({ rows }) => {
                   {years.map(fy => <LeaseYearTh key={fy} fy={fy} info={info} />)}
                 </tr>
               </thead>
-              <tbody>{totalRows(clientSum)}</tbody>
               {clientSum.rows.map(c => (
                 <tbody key={c.client} className="print-group">
                   <tr className="border-b border-slate-100 bg-white">
-                    <td className="px-3 py-1.5 font-black text-slate-800">{c.client}</td>
+                    <td className="px-3 py-1.5 font-black text-slate-800">{shortClientName(c.client)}</td>
                     {years.map(fy => <LeaseQtyTd key={fy} series={c.total} fy={fy} info={info} className="font-black text-slate-800" />)}
                   </tr>
                   {REBUILD_ITEMS.map(it => (

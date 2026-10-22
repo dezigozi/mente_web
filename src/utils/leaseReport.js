@@ -80,6 +80,13 @@ export function buildLeaseReportIndex(rows) {
   };
 }
 
+/** 得意先名から会社名を外して課名だけに（「オリックス自動車(株)大阪フロント課」→「大阪フロント課」） */
+export function shortClientName(name) {
+  const t = normText(name);
+  const m = t.match(/^.*?(?:\(株\)|\(有\)|株式会社)\s*(.+)$/);
+  return m && m[1].trim() ? m[1].trim() : t;
+}
+
 /** リース会社の得意先一覧（本数の多い順） */
 export function listClients(index, lease) {
   const m = new Map();
