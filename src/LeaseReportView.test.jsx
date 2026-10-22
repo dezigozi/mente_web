@@ -29,6 +29,7 @@ describe('LeaseReportView', () => {
     expect(screen.queryByRole('columnheader', { name: '得意先' })).toBeNull();
     expect(screen.queryByText(/数量（本数）/)).toBeNull();
     expect(screen.getByRole('button', { name: '大阪フロント課' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '西日本' })).toBeNull();
   });
 
   it('「全部」で東京の工場も出る。行を開くと品目と分析名(中)の内訳', () => {
@@ -56,5 +57,21 @@ describe('LeaseReportView', () => {
     expect(within(table).getAllByText('スターター').length).toBeGreaterThan(0);
     // 2025年度 7本 vs 2024年度 2本 → +250%
     expect(within(table).getAllByText('↗250%').length).toBeGreaterThan(0);
+  });
+
+  it('選んだ得意先の計が表のいちばん下に出る（支店別・工場別とも）', () => {
+    render(<LeaseReportView rows={rows} />);
+    fireEvent.click(screen.getByRole('button', { name: '全部' }));
+    // 工場別：A工場 7 + B工場 9 = 16（2025年度）
+    let bodies = screen.getByRole('table').querySelectorAll('tbody');
+    let last = bodies[bodies.length - 1];
+    expect(within(last).getByText('計')).toBeTruthy();
+    expect(last.querySelector('tr').textContent).toContain('16');
+    fireEvent.click(screen.getByRole('button', { name: /支店別/ }));
+    bodies = screen.getByRole('table').querySelectorAll('tbody');
+    last = bodies[bodies.length - 1];
+    expect(last.querySelector('tr').textContent).toMatch(/^計/);
+    expect(last.querySelector('tr').textContent).toContain('16');
+    expect(within(last).getByText('コンプレッサー')).toBeTruthy();
   });
 });

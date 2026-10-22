@@ -132,6 +132,17 @@ function selectedCells(index, lease, clients) {
   return out;
 }
 
+/** 複数行の本数を足し合わせる（表の一番下の「計」用） */
+export function sumSeries(list) {
+  const out = newSeries();
+  for (const s of list) {
+    if (!s) continue;
+    s.byFy.forEach((v, fy) => out.byFy.set(fy, (out.byFy.get(fy) || 0) + v));
+    out.prevSame += s.prevSame;
+  }
+  return out;
+}
+
 const sumAll = s => { let t = 0; s.byFy.forEach(v => { t += v; }); return t; };
 
 /**
