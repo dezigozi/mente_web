@@ -23,7 +23,7 @@ import {
 } from './utils/visitStore';
 import {
   REBUILD_ITEMS, WEST_ORIX_CLIENT_KEYWORDS, ORIX_LEASE, buildLeaseReportIndex, listClients,
-  defaultClientSelection, summarizeFactories, summarizeClients, prevBase, shortClientName,
+  defaultClientSelection, summarizeFactories, summarizeClients, prevBase, shortClientName, sumSeries,
 } from './utils/leaseReport';
 import areaCodes from './data/areaCodes.json';
 /**
@@ -1450,6 +1450,16 @@ const LeaseReportView = memo(({ rows }) => {
     return factorySum.rows.filter(f => norm(`${f.key} ${f.pref} ${f.address}`).includes(q));
   }, [factorySum, query]);
 
+  /** 表の一番下の「計」（工場別は絞り込み後の工場、支店別は選んだ得意先） */
+  const bottomTotal = useMemo(() => {
+    if (tab === 'client') return clientSum.rows.length ? { total: clientSum.total, items: clientSum.totalItems } : null;
+    if (!shownFactories.length) return null;
+    return {
+      total: sumSeries(shownFactories.map(f => f.total)),
+      items: new Map(REBUILD_ITEMS.map(it => [it, sumSeries(shownFactories.map(f => f.items.get(it)))])),
+    };
+  }, [tab, clientSum, shownFactories]);
+
   const scopeText = clients.size === 0
     ? '全得意先'
     : (lease === ORIX_LEASE && clients.size === westDefault.size && [...westDefault].every(n => clients.has(n))
@@ -1467,11 +1477,19 @@ const LeaseReportView = memo(({ rows }) => {
         out.push(line([f.key, f.pref, '計', ...yVals(f.total)]));
         REBUILD_ITEMS.forEach(it => out.push(line([f.key, f.pref, it, ...yVals(f.items.get(it))])));
       }
+      if (bottomTotal) {
+        out.push(line(['計', '', '計', ...yVals(bottomTotal.total)]));
+        REBUILD_ITEMS.forEach(it => out.push(line(['計', '', it, ...yVals(bottomTotal.items.get(it))])));
+      }
     } else {
       out.push(line(['得意先', '品目', ...yCols]));
       for (const c of clientSum.rows) {
         out.push(line([shortClientName(c.client), '計', ...yVals(c.total)]));
         REBUILD_ITEMS.forEach(it => out.push(line([shortClientName(c.client), it, ...yVals(c.items.get(it))])));
+      }
+      if (bottomTotal) {
+        out.push(line(['計', '計', ...yVals(bottomTotal.total)]));
+        REBUILD_ITEMS.forEach(it => out.push(line(['計', it, ...yVals(bottomTotal.items.get(it))])));
       }
     }
     const kind = tab === 'factory' ? '工場別リビルト実績' : '支店別オルタスタコンプ';
@@ -1489,6 +1507,20 @@ const LeaseReportView = memo(({ rows }) => {
         tab === key ? 'bg-white text-slate-800 shadow' : 'text-slate-500 hover:text-slate-700'}`}>
       <Icon size={16} /> {label}
     </button>
+  );
+  const totalBody = (labelSpan) => bottomTotal && (
+    <tbody className="print-group border-t-2 border-green-900">
+      <tr className="bg-emerald-50">
+        <td className="px-3 py-2 font-black text-emerald-800" colSpan={labelSpan}>計</td>
+        {years.map(fy => <LeaseQtyTd key={fy} series={bottomTotal.total} fy={fy} info={info} className="font-black text-slate-800" />)}
+      </tr>
+      {REBUILD_ITEMS.map(it => (
+        <tr key={it} className="bg-emerald-50/40 border-b border-slate-100">
+          <td className="px-3 py-1 pl-8 font-bold text-emerald-700" colSpan={labelSpan}>{LEASE_REPORT_ITEM_LABEL[it]}</td>
+          {years.map(fy => <LeaseQtyTd key={fy} series={bottomTotal.items.get(it)} fy={fy} info={info} className="font-bold text-slate-700" />)}
+        </tr>
+      ))}
+    </tbody>
   );
   const chipCls = on => `px-3 py-1.5 rounded-xl text-xs font-black border transition-colors ${
     on ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white text-slate-500 border-slate-200 hover:border-emerald-300'}`;
@@ -1530,10 +1562,6 @@ const LeaseReportView = memo(({ rows }) => {
         <div className="flex flex-wrap items-center gap-1.5">
           <span className="text-xs font-black text-slate-500 mr-1">得意先</span>
           <button onClick={() => { setClients(new Set()); resetView(); }} className={chipCls(clients.size === 0)}>全部</button>
-          {lease === ORIX_LEASE && westDefault.size > 0 && (
-            <button onClick={() => { setClients(new Set(westDefault)); resetView(); }}
-              className={chipCls(scopeText.startsWith('西日本'))}>西日本</button>
-          )}
           <span className="w-px h-5 bg-slate-200 mx-1" />
           {clientList.map(c => (
             <button key={c.name} onClick={() => toggleClient(c.name)} className={chipCls(clients.has(c.name))}>
@@ -1593,6 +1621,7 @@ const LeaseReportView = memo(({ rows }) => {
               {!shownFactories.length && (
                 <tbody><tr><td colSpan={2 + years.length} className="px-3 py-10 text-center text-slate-400 font-bold">条件に合う工場がないよ</td></tr></tbody>
               )}
+              {totalBody(2)}
             </table>
           ) : (
             <table className="w-full text-xs">
@@ -1619,6 +1648,7 @@ const LeaseReportView = memo(({ rows }) => {
               {!clientSum.rows.length && (
                 <tbody><tr><td colSpan={1 + years.length} className="px-3 py-10 text-center text-slate-400 font-bold">データがないよ</td></tr></tbody>
               )}
+              {totalBody(1)}
             </table>
           )}
         </div>
