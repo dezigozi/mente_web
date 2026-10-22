@@ -21,6 +21,10 @@ import {
   loadAll, saveList, deleteList, saveVisit, deleteVisit, exportAll, importAll, newId,
   storeMode, getShareKey, setShareKey, localLeftovers, migrateLocalToShared,
 } from './utils/visitStore';
+import {
+  REBUILD_ITEMS, WEST_ORIX_CLIENT_KEYWORDS, ORIX_LEASE, buildLeaseReportIndex, listClients,
+  defaultClientSelection, summarizeFactories, summarizeClients, prevBase,
+} from './utils/leaseReport';
 import areaCodes from './data/areaCodes.json';
 /**
  * メンテ実績ダッシュ（単一ファイル構成）
@@ -316,7 +320,7 @@ const App = () => {
   const [bFactorySelected, setBFactorySelected] = useState([]);
   const [bSearchPhone, setBSearchPhone] = useState('');
   const [bSearchPref, setBSearchPref] = useState('');
-  const [reportMode, setReportMode] = useState('dashboard'); // 'dashboard' | 'margin' | 'tab' | 'ncs'
+  const [reportMode, setReportMode] = useState('dashboard'); // 'dashboard' | 'margin' | 'tab' | 'ncs' | 'lease'
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [, startTransition] = useTransition();
 
@@ -895,6 +899,18 @@ const App = () => {
             <MapPin size={20} />
             <span className="font-black text-sm tracking-tight">NCS訪問管理</span>
           </button>
+          <button
+            onClick={() => {
+              startTransition(() => { setReportMode('lease'); setIsSidebarOpen(false); });
+            }}
+            className={`flex items-center gap-3 w-full p-4 rounded-2xl transition-all duration-300 ${
+              reportMode === 'lease'
+                ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-600/30 scale-105'
+                : 'text-green-400 hover:bg-green-800'
+            }`}>
+            <Building2 size={20} />
+            <span className="font-black text-sm tracking-tight">リース会社別レポート</span>
+          </button>
 
           <div className="pt-8 pb-2 px-4 text-[10px] font-black text-green-500 uppercase tracking-widest">
             Reports Export
@@ -1332,10 +1348,315 @@ const App = () => {
         {rawData && !isLoading && reportMode === 'ncs' && (
           <NcsVisitView rows={rawData.rows} leaseCompanies={leaseCompanies} />
         )}
+        {rawData && !isLoading && reportMode === 'lease' && (
+          <LeaseReportView rows={rawData.rows} />
+        )}
       </main>
     </div>
   );
 };
+
+// ===== リース会社別レポート（工場別リビルト実績 / 支店別 オルタ・スタ・コンプ） =====
+
+const LEASE_REPORT_ITEM_LABEL = { 'オルタネーター': 'オルタ', 'スターター': 'スターター', 'コンプレッサー': 'コンプレッサー' };
+const LEASE_REPORT_LEASE_NAME = { OR: 'オリックス自動車' };
+const LEASE_REPORT_RENDER_STEP = 200;
+const leaseReportLabel = l => (LEASE_REPORT_LEASE_NAME[l] ? `${l}（${LEASE_REPORT_LEASE_NAME[l]}）` : l);
+
+/** 年度の見出し（途中の年度は「〜◯月 途中」） */
+const LeaseYearTh = ({ fy, info }) => (
+  <th className="px-3 py-2 font-black text-right whitespace-nowrap">
+    {fy}年度
+    <span className="block text-[9px] font-bold text-green-300">
+      {info.partial && fy === info.lastFy ? `4月〜${info.lastMonth}月 途中` : `${fy}/4〜${fy + 1}/3`}
+    </span>
+  </th>
+);
+
+/** 本数＋前年比（途中の年度は前年同期間と比べる） */
+const LeaseQtyTd = ({ series, fy, info, className = '' }) => {
+  const q = series.byFy.get(fy) || 0;
+  return (
+    <td className={`px-3 py-1.5 text-right whitespace-nowrap ${className}`}>
+      {q ? q.toLocaleString() : ''}<NcsYoY curr={q} prev={prevBase(series, fy, info)} />
+    </td>
+  );
+};
+
+const leaseYoYText = (series, fy, info) => {
+  const y = calcYoY(series.byFy.get(fy) || 0, prevBase(series, fy, info));
+  return y == null ? '' : y;
+};
+
+const LeaseReportView = memo(({ rows }) => {
+  const index = useMemo(() => buildLeaseReportIndex(rows), [rows]);
+  const leaseOptions = useMemo(() => {
+    const qty = new Map();
+    index.leases.forEach((cells, l) => { let t = 0; cells.forEach(c => { t += c.qty; }); qty.set(l, t); });
+    const order = l => { const i = TAB_LEASE_ORDER.indexOf(l); return i < 0 ? 99 : i; };
+    return [...qty.keys()].sort((a, b) => order(a) - order(b) || qty.get(b) - qty.get(a));
+  }, [index]);
+
+  const [lease, setLease] = useState(ORIX_LEASE);
+  const [clients, setClients] = useState(() => defaultClientSelection(index, ORIX_LEASE));
+  const [tab, setTab] = useState('factory'); // 'factory' | 'client'
+  const [query, setQuery] = useState('');
+  const [openKey, setOpenKey] = useState(null);
+  const [renderLimit, setRenderLimit] = useState(LEASE_REPORT_RENDER_STEP);
+
+  // データ読み直しで OR が無い・選択が古いときは合わせ直す
+  useEffect(() => {
+    if (leaseOptions.length && !leaseOptions.includes(lease)) {
+      setLease(leaseOptions[0]);
+      setClients(defaultClientSelection(index, leaseOptions[0]));
+    }
+  }, [leaseOptions, lease, index]);
+
+  const clientList = useMemo(() => listClients(index, lease), [index, lease]);
+  const westDefault = useMemo(() => defaultClientSelection(index, lease), [index, lease]);
+
+  const resetView = () => { setOpenKey(null); setRenderLimit(LEASE_REPORT_RENDER_STEP); };
+  const changeLease = (l) => {
+    setLease(l);
+    setClients(defaultClientSelection(index, l));
+    setQuery('');
+    resetView();
+  };
+  const toggleClient = (name) => {
+    setClients(prev => {
+      const next = new Set(prev);
+      if (next.has(name)) next.delete(name); else next.add(name);
+      return next;
+    });
+    resetView();
+  };
+
+  const factorySum = useMemo(
+    () => (tab === 'factory' ? summarizeFactories(index, lease, clients) : null),
+    [tab, index, lease, clients],
+  );
+  const clientSum = useMemo(
+    () => (tab === 'client' ? summarizeClients(index, lease, clients) : null),
+    [tab, index, lease, clients],
+  );
+  const sum = tab === 'factory' ? factorySum : clientSum;
+  const info = sum.info;
+  const years = info.years;
+
+  const shownFactories = useMemo(() => {
+    if (!factorySum) return [];
+    const q = norm(query);
+    if (!q) return factorySum.rows;
+    return factorySum.rows.filter(f => norm(`${f.key} ${f.pref} ${f.address} ${f.clients.join(' ')}`).includes(q));
+  }, [factorySum, query]);
+
+  const scopeText = clients.size === 0
+    ? '全得意先'
+    : (lease === ORIX_LEASE && clients.size === westDefault.size && [...westDefault].every(n => clients.has(n))
+      ? `西日本（${WEST_ORIX_CLIENT_KEYWORDS.join('・')}）`
+      : `${clients.size}得意先`);
+
+  const handleCsv = () => {
+    const yCols = years.flatMap(fy => [`${fy}年度`, `${fy}年度 前年比%`]);
+    const line = (cells) => cells.map(ncsCsvQ).join(',');
+    const yVals = s => years.flatMap(fy => [s.byFy.get(fy) || 0, leaseYoYText(s, fy, info)]);
+    const out = [];
+    if (tab === 'factory') {
+      out.push(line(['工場', '都道府県', '得意先', '品目', ...yCols]));
+      for (const f of shownFactories) {
+        out.push(line([f.key, f.pref, f.clients.join(' / '), '計', ...yVals(f.total)]));
+        REBUILD_ITEMS.forEach(it => out.push(line([f.key, f.pref, f.clients.join(' / '), it, ...yVals(f.items.get(it))])));
+      }
+    } else {
+      out.push(line(['得意先', '品目', ...yCols]));
+      for (const c of clientSum.rows) {
+        out.push(line([c.client, '計', ...yVals(c.total)]));
+        REBUILD_ITEMS.forEach(it => out.push(line([c.client, it, ...yVals(c.items.get(it))])));
+      }
+    }
+    const kind = tab === 'factory' ? '工場別リビルト実績' : '支店別オルタスタコンプ';
+    ncsDownload(new Blob(['﻿' + out.join('\r\n')], { type: 'text/csv;charset=utf-8' }), `${lease}_${kind}.csv`);
+  };
+
+  const handlePrint = () => {
+    flushSync(() => setRenderLimit(Infinity));
+    window.print();
+  };
+
+  const tabBtn = (key, label, Icon) => (
+    <button key={key} onClick={() => { setTab(key); resetView(); }}
+      className={`flex items-center gap-2 px-5 py-2.5 rounded-2xl text-sm font-black transition-all ${
+        tab === key ? 'bg-white text-slate-800 shadow' : 'text-slate-500 hover:text-slate-700'}`}>
+      <Icon size={16} /> {label}
+    </button>
+  );
+  const chipCls = on => `px-3 py-1.5 rounded-xl text-xs font-black border transition-colors ${
+    on ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white text-slate-500 border-slate-200 hover:border-emerald-300'}`;
+
+  const totalRows = (s) => (
+    <>
+      <tr className="bg-emerald-50 border-b border-slate-100">
+        <td className="px-3 py-2 font-black text-emerald-700" colSpan={tab === 'factory' ? 3 : 1}>合計</td>
+        {years.map(fy => <LeaseQtyTd key={fy} series={s.total} fy={fy} info={info} className="font-black text-slate-800" />)}
+      </tr>
+      {REBUILD_ITEMS.map(it => (
+        <tr key={it} className="bg-emerald-50/40 border-b border-slate-100">
+          <td className="px-3 py-1.5 pl-6 font-bold text-emerald-700" colSpan={tab === 'factory' ? 3 : 1}>{LEASE_REPORT_ITEM_LABEL[it]}</td>
+          {years.map(fy => <LeaseQtyTd key={fy} series={s.totalItems.get(it)} fy={fy} info={info} className="font-bold text-slate-700" />)}
+        </tr>
+      ))}
+    </>
+  );
+
+  return (
+    <div className="space-y-6 animate-fade-in-up">
+      <div className="flex flex-wrap items-center gap-3 no-print">
+        <div className="flex items-center gap-2 mr-2">
+          <Building2 size={22} className="text-emerald-600" />
+          <h2 className="text-2xl font-black text-slate-800 tracking-tight">リース会社別レポート</h2>
+        </div>
+        <div className="inline-flex flex-wrap gap-1 bg-slate-100 p-1.5 rounded-3xl">
+          {tabBtn('factory', '工場別リビルト実績', Building2)}
+          {tabBtn('client', '支店別 オルタ・スタ・コンプ', Layers)}
+        </div>
+        <div className="ml-auto flex gap-2">
+          <button onClick={handleCsv} className="flex items-center gap-2 px-4 py-2.5 rounded-2xl text-xs font-black bg-white border border-slate-200 text-slate-600 hover:text-emerald-600 hover:border-emerald-300 shadow-sm">
+            <Download size={14} /> CSV
+          </button>
+          <button onClick={handlePrint} className="flex items-center gap-2 px-4 py-2.5 rounded-2xl text-xs font-black bg-green-900 text-white hover:bg-emerald-600 shadow-sm">
+            <FileText size={14} /> 印刷
+          </button>
+        </div>
+      </div>
+
+      <div className="bg-white rounded-3xl shadow-sm border border-slate-100 p-5 space-y-4 no-print">
+        <div className="flex flex-wrap items-center gap-3">
+          <span className="text-xs font-black text-slate-500">リース会社</span>
+          <select value={lease} onChange={e => changeLease(e.target.value)}
+            className="px-4 py-2.5 rounded-2xl border border-slate-200 bg-white text-sm font-black text-slate-700 focus:outline-none focus:ring-2 focus:ring-emerald-300">
+            {leaseOptions.map(l => <option key={l} value={l}>{leaseReportLabel(l)}</option>)}
+          </select>
+          {tab === 'factory' && (
+            <input value={query} onChange={e => { setQuery(e.target.value); setRenderLimit(LEASE_REPORT_RENDER_STEP); }}
+              placeholder="工場名・県・得意先で絞り込み"
+              className="ml-auto w-64 px-4 py-2.5 rounded-2xl border border-slate-200 bg-white text-sm font-bold text-slate-700 focus:outline-none focus:ring-2 focus:ring-emerald-300" />
+          )}
+        </div>
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="text-xs font-black text-slate-500 mr-1">得意先</span>
+          <button onClick={() => { setClients(new Set()); resetView(); }} className={chipCls(clients.size === 0)}>全部</button>
+          {lease === ORIX_LEASE && westDefault.size > 0 && (
+            <button onClick={() => { setClients(new Set(westDefault)); resetView(); }}
+              className={chipCls(scopeText.startsWith('西日本'))}>西日本</button>
+          )}
+          <span className="w-px h-5 bg-slate-200 mx-1" />
+          {clientList.map(c => (
+            <button key={c.name} onClick={() => toggleClient(c.name)} className={chipCls(clients.has(c.name))}>
+              {c.name}<span className="ml-1 text-[10px] opacity-70">{c.qty.toLocaleString()}</span>
+            </button>
+          ))}
+        </div>
+        <div className="text-[11px] font-bold text-slate-400">
+          数量（本数）/ 対象：分析名(大) がオルタネーター・スターター・コンプレッサー（MAX・他社リビルト等すべて）/ 年度は4月〜3月
+          {info.partial && ` / ${info.lastFy}年度は${info.lastMonth}月までの途中。前年比は前年の同じ月までと比べてるよ`}
+        </div>
+      </div>
+
+      <div className="bg-white rounded-3xl shadow-sm border border-slate-100 p-4 md:p-6">
+        <div className="mb-3 font-black text-slate-800">
+          {leaseReportLabel(lease)}　{tab === 'factory' ? '工場別リビルト実績' : '支店別 オルタ・スターター・コンプレッサー利用'}
+          <span className="ml-2 text-xs font-bold text-slate-500">{scopeText}{tab === 'factory' && ` / ${shownFactories.length}工場`}</span>
+        </div>
+        <div className="overflow-x-auto">
+          {tab === 'factory' ? (
+            <table className="w-full text-xs">
+              <thead className="bg-green-900 text-white">
+                <tr>
+                  <th className="px-3 py-2 text-left font-black">工場</th>
+                  <th className="px-3 py-2 text-left font-black whitespace-nowrap">県</th>
+                  <th className="px-3 py-2 text-left font-black">得意先</th>
+                  {years.map(fy => <LeaseYearTh key={fy} fy={fy} info={info} />)}
+                </tr>
+              </thead>
+              <tbody>{totalRows(factorySum)}</tbody>
+              {shownFactories.slice(0, renderLimit).map(f => {
+                const open = openKey === f.key;
+                return (
+                  <tbody key={f.key} className="print-group">
+                    <tr onClick={() => setOpenKey(open ? null : f.key)}
+                      className="border-b border-slate-100 hover:bg-emerald-50/50 cursor-pointer">
+                      <td className="px-3 py-1.5 font-black text-slate-800">
+                        <span className="inline-flex items-center gap-1">
+                          {open ? <ChevronDown size={12} className="text-emerald-600 no-print" /> : <ChevronRight size={12} className="text-slate-300 no-print" />}
+                          {f.key}
+                        </span>
+                      </td>
+                      <td className="px-3 py-1.5 font-bold text-slate-500 whitespace-nowrap">{f.pref}</td>
+                      <td className="px-3 py-1.5 font-bold text-slate-500">{f.clients.join(' / ')}</td>
+                      {years.map(fy => <LeaseQtyTd key={fy} series={f.total} fy={fy} info={info} className="font-black text-slate-800" />)}
+                    </tr>
+                    {open && REBUILD_ITEMS.map(it => (
+                      <React.Fragment key={it}>
+                        <tr className="bg-slate-50 border-b border-slate-100">
+                          <td className="px-3 py-1 pl-8 font-black text-emerald-700" colSpan={3}>{LEASE_REPORT_ITEM_LABEL[it]}</td>
+                          {years.map(fy => <LeaseQtyTd key={fy} series={f.items.get(it)} fy={fy} info={info} className="font-bold text-slate-700" />)}
+                        </tr>
+                        {f.mids.filter(m => m.item === it).map(m => (
+                          <tr key={m.mid} className="bg-slate-50/50 border-b border-slate-50">
+                            <td className="px-3 py-1 pl-14 font-bold text-slate-500" colSpan={3}>{m.mid}</td>
+                            {years.map(fy => <LeaseQtyTd key={fy} series={m.series} fy={fy} info={info} className="text-slate-500" />)}
+                          </tr>
+                        ))}
+                      </React.Fragment>
+                    ))}
+                  </tbody>
+                );
+              })}
+              {!shownFactories.length && (
+                <tbody><tr><td colSpan={3 + years.length} className="px-3 py-10 text-center text-slate-400 font-bold">条件に合う工場がないよ</td></tr></tbody>
+              )}
+            </table>
+          ) : (
+            <table className="w-full text-xs">
+              <thead className="bg-green-900 text-white">
+                <tr>
+                  <th className="px-3 py-2 text-left font-black">得意先 / 品目</th>
+                  {years.map(fy => <LeaseYearTh key={fy} fy={fy} info={info} />)}
+                </tr>
+              </thead>
+              <tbody>{totalRows(clientSum)}</tbody>
+              {clientSum.rows.map(c => (
+                <tbody key={c.client} className="print-group">
+                  <tr className="border-b border-slate-100 bg-white">
+                    <td className="px-3 py-1.5 font-black text-slate-800">{c.client}</td>
+                    {years.map(fy => <LeaseQtyTd key={fy} series={c.total} fy={fy} info={info} className="font-black text-slate-800" />)}
+                  </tr>
+                  {REBUILD_ITEMS.map(it => (
+                    <tr key={it} className="border-b border-slate-50">
+                      <td className="px-3 py-1 pl-8 font-bold text-slate-500">{LEASE_REPORT_ITEM_LABEL[it]}</td>
+                      {years.map(fy => <LeaseQtyTd key={fy} series={c.items.get(it)} fy={fy} info={info} className="text-slate-700" />)}
+                    </tr>
+                  ))}
+                </tbody>
+              ))}
+              {!clientSum.rows.length && (
+                <tbody><tr><td colSpan={1 + years.length} className="px-3 py-10 text-center text-slate-400 font-bold">データがないよ</td></tr></tbody>
+              )}
+            </table>
+          )}
+        </div>
+        {tab === 'factory' && shownFactories.length > renderLimit && (
+          <div className="mt-3 flex gap-2 justify-center no-print">
+            <button onClick={() => setRenderLimit(n => n + LEASE_REPORT_RENDER_STEP)} className="px-4 py-2 rounded-xl text-xs font-black bg-slate-100 text-slate-600 hover:bg-emerald-50">
+              もっと見る（残り {(shownFactories.length - renderLimit).toLocaleString()}工場）
+            </button>
+            <button onClick={() => setRenderLimit(Infinity)} className="px-4 py-2 rounded-xl text-xs font-black bg-slate-100 text-slate-600 hover:bg-emerald-50">全部表示</button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+});
 
 // ===== 接続ステータスバッジ =====
 const ConnectionBadge = ({ status }) => {
@@ -4350,3 +4671,5 @@ const NcsResultTab = ({ index, lists, visitsByFactory, statusOf }) => {
 };
 
 export default App;
+/** テスト用 */
+export { LeaseReportView };

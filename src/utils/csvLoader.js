@@ -35,10 +35,10 @@ export const extractNameFromBranchRaw = _extractNameFromBranchRaw;
 export const phoneDigitsKey = _phoneDigitsKey;
 export const normalizeJapanPhoneDigits = _normalizeJapanPhoneDigits;
 
-// v2: rawRow（全列）を持たない軽量版。旧キーは起動時に消す
-const CACHE_KEY_DATA = 'csv_parsed_v2';
-const CACHE_KEY_ETAG = 'csv_etag_v2';
-const OLD_CACHE_KEYS = ['csv_parsed_v1', 'csv_etag_v1', 'maint_report_data_v11'];
+// v2: rawRow（全列）を持たない軽量版 / v3: 分析名(中)（itemMid）と「2026年3月」形式の納品日を追加。旧キーは起動時に消す
+const CACHE_KEY_DATA = 'csv_parsed_v3';
+const CACHE_KEY_ETAG = 'csv_etag_v3';
+const OLD_CACHE_KEYS = ['csv_parsed_v1', 'csv_etag_v1', 'csv_parsed_v2', 'csv_etag_v2', 'maint_report_data_v11'];
 
 /** public/data 以下の CSV への URL（先頭が // にならないよう正規化） */
 function publicDataUrl(filename) {
