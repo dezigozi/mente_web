@@ -4383,7 +4383,7 @@ const NcsFactoryYears = ({ f, years }) => {
 };
 
 /** 訪問1行の入力（訪問日・感触・メモ）。表の td を返す */
-const NcsVisitRowEditor = ({ initial, onSave, onCancel }) => {
+const NcsVisitRowEditor = ({ initial, onSave, onCancel, onRemove }) => {
   const [date, setDate] = useState(initial?.date || ncsTodayIso());
   const [result, setResult] = useState(initial?.result || '');
   const [memo, setMemo] = useState(initial?.memo || '');
@@ -4422,18 +4422,35 @@ const NcsVisitRowEditor = ({ initial, onSave, onCancel }) => {
         {onCancel && (
           <button onClick={onCancel} className="ml-1 px-2 py-1.5 rounded-lg text-xs font-black text-slate-400 hover:bg-slate-100">やめる</button>
         )}
+        {onRemove && (
+          <button onClick={onRemove} title="この工場をリストから外す"
+            className="ml-1 px-2 py-1.5 rounded-lg text-[11px] font-black text-slate-400 hover:text-rose-500 hover:bg-rose-50">外す</button>
+        )}
       </td>
     </>
   );
 };
 
 /** タブ2: 訪問リスト・記録（1行＝1訪問。再訪問は下に行を足す） */
+const NCS_ALL_LISTS = '__ALL_LISTS__';
+
 const NcsListTab = ({ index, lists, activeListId, setActiveListId, visitsByFactory, reload, onVisitSaved, onVisitDeleted }) => {
-  const list = lists.find(l => l.id === activeListId) || lists[0] || null;
   const [editId, setEditId] = useState(null);     // 書き直し中の訪問記録
   const [addingKey, setAddingKey] = useState(null); // 「＋次回」で行を足している工場
   const [showYears, setShowYears] = useState(false); // 年次実績比較を出す
   const years = useMemo(() => index.fiscalYears.slice(-4), [index]);
+  /** 「すべて」用: 全リストの工場をまとめる（同じ工場は最初のリストだけ）＋工場 → 入っているリスト */
+  const { allList, listsOfKey } = useMemo(() => {
+    const seen = new Map();
+    const factories = [];
+    for (const l of lists) for (const x of l.factories) {
+      if (!seen.has(x.key)) { seen.set(x.key, []); factories.push(x); }
+      seen.get(x.key).push(l);
+    }
+    return { allList: { id: NCS_ALL_LISTS, name: 'すべてのリスト', factories }, listsOfKey: seen };
+  }, [lists]);
+  const isAll = activeListId === NCS_ALL_LISTS && lists.length > 0;
+  const list = isAll ? allList : (lists.find(l => l.id === activeListId) || lists[0] || null);
 
   if (!list) {
     return (
@@ -4446,7 +4463,7 @@ const NcsListTab = ({ index, lists, activeListId, setActiveListId, visitsByFacto
   const handleSave = async (entry, form, base) => {
     const visit = base
       ? { ...base, ...form }
-      : { id: newId(), listId: list.id, factoryKey: entry.key, tel: entry.tel, createdAt: new Date().toISOString(), ...form };
+      : { id: newId(), listId: isAll ? listsOfKey.get(entry.key)?.[0]?.id : list.id, factoryKey: entry.key, tel: entry.tel, createdAt: new Date().toISOString(), ...form };
     try {
       await saveVisit(visit);
       onVisitSaved(visit);
@@ -4498,6 +4515,11 @@ const NcsListTab = ({ index, lists, activeListId, setActiveListId, visitsByFacto
     <div className="space-y-6">
       {/* リスト選択 */}
       <div className="flex flex-wrap gap-2 no-print">
+        <button onClick={() => { setActiveListId(NCS_ALL_LISTS); setEditId(null); setAddingKey(null); }}
+          className={`px-4 py-2 rounded-2xl text-xs font-black border transition-all ${
+            isAll ? 'bg-emerald-600 text-white border-emerald-600 shadow' : 'bg-white text-slate-600 border-slate-200 hover:border-emerald-300'}`}>
+          すべて <span className="opacity-70">{allList.factories.length}</span>
+        </button>
         {lists.map(l => (
           <button key={l.id} onClick={() => { setActiveListId(l.id); setEditId(null); setAddingKey(null); }}
             className={`px-4 py-2 rounded-2xl text-xs font-black border transition-all ${
@@ -4511,7 +4533,7 @@ const NcsListTab = ({ index, lists, activeListId, setActiveListId, visitsByFacto
         <div>
           <div className="text-lg font-black text-slate-800">{list.name}</div>
           <div className="text-xs font-bold text-slate-400">
-            {list.factories.length}工場 / 訪問済み {visitedCount} / 作成 {String(list.createdAt).slice(0, 10).replace(/-/g, '/')}
+            {list.factories.length}工場 / 訪問済み {visitedCount}{!isAll && ` / 作成 ${String(list.createdAt).slice(0, 10).replace(/-/g, '/')}`}
           </div>
         </div>
         <div className="ml-auto flex flex-wrap gap-2 no-print">
@@ -4527,10 +4549,12 @@ const NcsListTab = ({ index, lists, activeListId, setActiveListId, visitsByFacto
             className="flex items-center gap-1.5 px-4 py-2.5 rounded-2xl text-xs font-black border border-green-900 text-green-900 hover:bg-green-50 disabled:opacity-40">
             <FileSpreadsheet size={14} /> ルート計画書Excel
           </button>
-          <button onClick={handleDeleteList}
-            className="flex items-center gap-1.5 px-4 py-2.5 rounded-2xl text-xs font-black text-rose-500 border border-rose-200 hover:bg-rose-50">
-            <Trash2 size={14} /> リストを削除
-          </button>
+          {!isAll && (
+            <button onClick={handleDeleteList}
+              className="flex items-center gap-1.5 px-4 py-2.5 rounded-2xl text-xs font-black text-rose-500 border border-rose-200 hover:bg-rose-50">
+              <Trash2 size={14} /> リストを削除
+            </button>
+          )}
         </div>
       </div>
 
@@ -4556,15 +4580,9 @@ const NcsListTab = ({ index, lists, activeListId, setActiveListId, visitsByFacto
                 <td rowSpan={span} className="px-2 py-2 text-center text-xs font-black text-slate-300 align-top">{i + 1}</td>
                 <td rowSpan={span} className="px-2 py-2 text-xs font-bold text-slate-600 whitespace-nowrap align-top">{areaOf(x.address)}</td>
                 <td rowSpan={span} className="px-2 py-2 align-top min-w-[200px]">
-                  <div className="flex items-start gap-1">
-                    <div className="flex-1">
-                      <div className="font-black text-slate-800 text-sm">{x.key}</div>
-                      <div className="text-[11px] text-slate-400">TEL: {x.tel}</div>
-                    </div>
-                    <button onClick={() => handleRemoveFactory(x)} title="リストから外す" className="text-slate-300 hover:text-rose-500 no-print">
-                      <X size={14} />
-                    </button>
-                  </div>
+                  <div className="font-black text-slate-800 text-sm">{x.key}</div>
+                  <div className="text-[11px] text-slate-400">TEL: {x.tel}</div>
+                  {isAll && <div className="text-[10px] font-bold text-emerald-700">{(listsOfKey.get(x.key) || []).map(l => l.name).join('、')}</div>}
                 </td>
               </>
             );
@@ -4577,15 +4595,23 @@ const NcsListTab = ({ index, lists, activeListId, setActiveListId, visitsByFacto
                       <NcsVisitRowEditor initial={v} onSave={form => handleSave(x, form, v)} onCancel={() => setEditId(null)} />
                     ) : (
                       <>
-                        <td className="px-2 py-2 text-xs font-bold text-slate-700 whitespace-nowrap">{v.date.replace(/-/g, '/')}</td>
-                        <td className="px-2 py-2"><NcsResultBadge result={v.result} /></td>
-                        <td className="px-2 py-2 text-xs text-slate-600 whitespace-pre-wrap">{v.memo}</td>
+                        {/* 日付・感触・メモのどこを押しても修正 */}
+                        <td onClick={() => setEditId(v.id)} title="クリックで修正"
+                          className="px-2 py-2 text-xs font-bold text-slate-700 whitespace-nowrap cursor-pointer hover:bg-emerald-50">{v.date.replace(/-/g, '/')}</td>
+                        <td onClick={() => setEditId(v.id)} title="クリックで修正"
+                          className="px-2 py-2 cursor-pointer hover:bg-emerald-50"><NcsResultBadge result={v.result} /></td>
+                        <td onClick={() => setEditId(v.id)} title="クリックで修正"
+                          className="px-2 py-2 text-xs text-slate-600 whitespace-pre-wrap cursor-pointer hover:bg-emerald-50">{v.memo}</td>
                         <td className="px-2 py-2 whitespace-nowrap no-print">
-                          <button onClick={() => setEditId(v.id)} title="直す" className="p-1 text-slate-300 hover:text-emerald-600"><Pencil size={14} /></button>
-                          <button onClick={() => handleDeleteVisit(v)} title="消す" className="p-1 text-slate-300 hover:text-rose-500"><Trash2 size={14} /></button>
+                          <button onClick={() => setEditId(v.id)} title="直す" className="p-1 text-slate-400 hover:text-emerald-600"><Pencil size={14} /></button>
+                          <button onClick={() => handleDeleteVisit(v)} title="この記録を消す" className="p-1 text-slate-400 hover:text-rose-500"><Trash2 size={14} /></button>
                           {j === vs.length - 1 && !adding && (
                             <button onClick={() => setAddingKey(x.key)}
                               className="ml-1 px-2 py-1 rounded-lg text-[11px] font-black text-emerald-700 border border-emerald-200 hover:bg-emerald-50">＋次回</button>
+                          )}
+                          {j === 0 && !isAll && (
+                            <button onClick={() => handleRemoveFactory(x)} title="この工場をリストから外す（訪問記録は残る）"
+                              className="ml-1 px-2 py-1 rounded-lg text-[11px] font-black text-slate-400 hover:text-rose-500 hover:bg-rose-50">外す</button>
                           )}
                         </td>
                       </>
@@ -4595,7 +4621,8 @@ const NcsListTab = ({ index, lists, activeListId, setActiveListId, visitsByFacto
                 {adding && (
                   <tr className={`align-top ${vs.length ? 'border-t border-slate-50' : ''}`}>
                     {!vs.length && factoryCells}
-                    <NcsVisitRowEditor onSave={form => handleSave(x, form)} onCancel={vs.length ? () => setAddingKey(null) : undefined} />
+                    <NcsVisitRowEditor onSave={form => handleSave(x, form)} onCancel={vs.length ? () => setAddingKey(null) : undefined}
+                      onRemove={vs.length || isAll ? undefined : () => handleRemoveFactory(x)} />
                   </tr>
                 )}
                 {showYears && (
