@@ -19,9 +19,10 @@ export const ORIX_LEASE = 'OR';
 const normText = s => String(s ?? '').normalize('NFKC').trim();
 const factoryKeyOf = r => r.branchCompany || r.branch || '(未分類)';
 
-/** レポートから外す得意先（オリックスの U-car 店・サービスカンパニー） */
+/** レポートから外す得意先（オリックスの U-car 店・サービスカンパニー・課名なしの「オリックス自動車(株)」） */
 export function isExcludedClient(name) {
-  return /U-?car|サービスカンパニー/i.test(normText(name));
+  const t = normText(name);
+  return /U-?car|サービスカンパニー/i.test(t) || /^オリックス自動車\s*\(株\)$/.test(t);
 }
 
 /** 得意先名のまとめ（NCS は「◯◯エリアチーム」「◯◯チーム」→「◯◯チーム」） */
