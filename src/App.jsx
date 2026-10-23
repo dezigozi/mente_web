@@ -3786,6 +3786,17 @@ const ProductMarginView = ({ items, leaseCompanies }) => {
 
 // ===== NCS訪問管理（ターゲット抽出 → 訪問リスト → 訪問記録 → 訪問後の受注チェック） =====
 const NCS_RESULTS = ['好感触', '様子見', '脈なし'];
+/** ターゲット（訪問リストを作る元の工場）は lists シートに予約IDの1行で持つ（GAS の変更なしで共有できる） */
+const NCS_TARGET_LIST_ID = 'ncs_targets';
+/** リスト群の工場をまとめる（同じ工場は最初の1回だけ） */
+const ncsUnionFactories = (lists) => {
+  const seen = new Set();
+  const out = [];
+  for (const l of lists) for (const x of l.factories || []) {
+    if (!seen.has(x.key)) { seen.add(x.key); out.push(x); }
+  }
+  return out;
+};
 const NCS_RESULT_STYLE = {
   '好感触': 'bg-emerald-100 text-emerald-700 border-emerald-200',
   '様子見': 'bg-amber-100 text-amber-700 border-amber-200',
@@ -3878,6 +3889,32 @@ const NcsVisitView = ({ rows, leaseCompanies }) => {
       alert(`移せなかったよ: ${e?.message || e}`);
     }
   };
+
+  /** 訪問リスト（ターゲット行を除く） */
+  const visitLists = useMemo(() => lists.filter(l => l.id !== NCS_TARGET_LIST_ID), [lists]);
+  /** ターゲット。まだ保存がなければ、これまでの訪問リストの工場をターゲット扱いにする */
+  const pool = useMemo(() => {
+    const saved = lists.find(l => l.id === NCS_TARGET_LIST_ID);
+    return saved ? saved.factories : ncsUnionFactories(visitLists);
+  }, [lists, visitLists]);
+  const poolKeys = useMemo(() => new Set(pool.map(x => x.key)), [pool]);
+  /** ターゲットを書き換える。ほかの人の追加を消さないよう、保存の直前に最新を読み直してから足し引きする */
+  const updatePool = useCallback(async (fn) => {
+    const fresh = await loadAll();
+    const saved = fresh.lists.find(l => l.id === NCS_TARGET_LIST_ID);
+    const cur = saved ? saved.factories : ncsUnionFactories(fresh.lists.filter(l => l.id !== NCS_TARGET_LIST_ID));
+    await saveList({ id: NCS_TARGET_LIST_ID, name: 'ターゲット', createdAt: saved?.createdAt || new Date().toISOString(), factories: fn(cur) });
+    await reload();
+  }, [reload]);
+  const addTargets = useCallback((entries) => updatePool(cur => {
+    const have = new Set(cur.map(x => x.key));
+    return [...cur, ...entries.filter(x => !have.has(x.key))];
+  }), [updatePool]);
+  const removeTarget = useCallback((key) => updatePool(cur => cur.filter(x => x.key !== key)), [updatePool]);
+  const createVisitList = useCallback(async (list) => {
+    await saveList(list);
+    await reload();
+  }, [reload]);
 
   /** 保存・削除した記録を手元にも反映（共有だと全件読み直しが遅いので） */
   const onVisitSaved = useCallback((v) => {
@@ -3995,7 +4032,7 @@ const NcsVisitView = ({ rows, leaseCompanies }) => {
         </div>
         <div className="inline-flex flex-wrap gap-1 bg-slate-100 p-1.5 rounded-3xl">
           {tabBtn('target', 'ターゲット抽出', Target)}
-          {tabBtn('list', '訪問リスト・記録', ClipboardList, lists.length)}
+          {tabBtn('list', '訪問リスト・記録', ClipboardList, visitLists.length)}
           {tabBtn('result', '成果チェック', History, visitsByFactory.size)}
         </div>
         {storeLoading && <Loader2 size={16} className="animate-spin text-slate-400" />}
@@ -4045,21 +4082,22 @@ const NcsVisitView = ({ rows, leaseCompanies }) => {
         <NcsTargetTab
           index={index} leaseCompanies={leaseCompanies}
           judgeFY={judgeFY} setJudgeFY={setJudgeFY}
-          lists={lists} statusOf={statusOf}
-          onSaved={async (listId) => { await reload(); setTab('list'); setActiveListId(listId); }}
+          poolKeys={poolKeys} visitLists={visitLists} statusOf={statusOf}
+          onAddTargets={addTargets}
         />
       )}
       {tab === 'list' && (
         <NcsListTab
           index={index}
-          lists={lists} activeListId={activeListId} setActiveListId={setActiveListId}
+          lists={visitLists} pool={pool} activeListId={activeListId} setActiveListId={setActiveListId}
           visitsByFactory={visitsByFactory} reload={reload}
           onVisitSaved={onVisitSaved} onVisitDeleted={onVisitDeleted}
+          onCreateList={createVisitList} onRemoveTarget={removeTarget}
         />
       )}
       {tab === 'result' && (
         <NcsResultTab
-          index={index} lists={lists} visitsByFactory={visitsByFactory} statusOf={statusOf}
+          index={index} lists={visitLists} visitsByFactory={visitsByFactory} statusOf={statusOf}
         />
       )}
     </div>
@@ -4070,16 +4108,15 @@ const NCS_TH = 'px-3 py-3 text-[11px] font-black whitespace-nowrap';
 const ncsYmd = () => ncsTodayIso().replace(/-/g, '');
 
 /** タブ1: ターゲット抽出 */
-const NcsTargetTab = ({ index, leaseCompanies, judgeFY, setJudgeFY, lists, statusOf, onSaved }) => {
+const NcsTargetTab = ({ index, leaseCompanies, judgeFY, setJudgeFY, poolKeys, visitLists, statusOf, onAddTargets }) => {
   const [compareLeases, setCompareLeases] = useState(new Set()); // 空＝NCS以外すべて
   const [phone, setPhone] = useState('');
   const [pref, setPref] = useState('');
   const [keyword, setKeyword] = useState('');
   const [onlyTargets, setOnlyTargets] = useState(true);
   const [checked, setChecked] = useState(new Set());
-  const [showSave, setShowSave] = useState(false);
-  const [saveDest, setSaveDest] = useState('__new__');
-  const [listName, setListName] = useState('');
+  const [adding, setAdding] = useState(false);
+  const [notice, setNotice] = useState('');
 
   const targets = useMemo(
     () => buildNcsTargets(index.factories, { judgeFY, compareLeases, phone, pref, keyword, onlyTargets }),
@@ -4089,15 +4126,15 @@ const NcsTargetTab = ({ index, leaseCompanies, judgeFY, setJudgeFY, lists, statu
   const shownYears = useMemo(() => index.fiscalYears.filter(fy => fy <= judgeFY).slice(-4), [index, judgeFY]);
   const compareSet = compareLeases.size ? compareLeases : null;
   const otherLeases = useMemo(() => leaseCompanies.filter(l => l !== NCS && l !== '(未分類)'), [leaseCompanies]);
-  /** 訪問リストに入っている工場 → リスト名 */
+  /** 訪問リストに入っている工場 → リスト名（ターゲット列のマウスオーバー用） */
   const listedIn = useMemo(() => {
     const m = new Map();
-    for (const l of lists) for (const x of l.factories) {
+    for (const l of visitLists) for (const x of l.factories) {
       if (!m.has(x.key)) m.set(x.key, []);
       m.get(x.key).push(l.name);
     }
     return m;
-  }, [lists]);
+  }, [visitLists]);
 
   const toggleLease = l => setCompareLeases(prev => {
     const n = new Set(prev);
@@ -4113,31 +4150,19 @@ const NcsTargetTab = ({ index, leaseCompanies, judgeFY, setJudgeFY, lists, statu
   const picked = () => [...checked].map(k => index.factories.get(k)).filter(Boolean);
   const toEntry = f => ({ key: f.key, tel: f.tel, address: f.address, pref: f.pref, contact: topOrderers(f, judgeFY).join('、') });
 
-  const openSave = () => {
-    if (!checked.size) { alert('リストに入れる工場にチェックしてね'); return; }
-    setListName(`${(keyword || pref || '訪問').trim()}_${ncsYmd()}`);
-    setSaveDest('__new__');
-    setShowSave(true);
-  };
-  const handleSaveList = async () => {
-    const fs = picked();
-    let list;
-    if (saveDest === '__new__') {
-      if (!listName.trim()) { alert('リスト名を入れてね'); return; }
-      list = { id: newId(), name: listName.trim(), createdAt: new Date().toISOString(), factories: fs.map(toEntry) };
-    } else {
-      const base = lists.find(l => l.id === saveDest);
-      if (!base) return;
-      const have = new Set(base.factories.map(x => x.key));
-      list = { ...base, factories: [...base.factories, ...fs.filter(f => !have.has(f.key)).map(toEntry)] };
-    }
+  const handleAddTargets = async () => {
+    const fs = picked().filter(f => !poolKeys.has(f.key));
+    if (!fs.length) { alert('チェックした工場はもう全部ターゲットに入ってるよ'); return; }
+    setAdding(true);
     try {
-      await saveList(list);
+      await onAddTargets(fs.map(toEntry));
       setChecked(new Set());
-      setShowSave(false);
-      await onSaved(list.id);
+      setNotice(`${fs.length}件をターゲットに追加したよ`);
+      setTimeout(() => setNotice(''), 4000);
     } catch (e) {
-      alert(`保存に失敗したよ: ${e?.message || e}`);
+      alert(`追加に失敗したよ: ${e?.message || e}`);
+    } finally {
+      setAdding(false);
     }
   };
   const handleRouteExport = async () => {
@@ -4208,35 +4233,18 @@ const NcsTargetTab = ({ index, leaseCompanies, judgeFY, setJudgeFY, lists, statu
         <button onClick={() => setChecked(new Set())} disabled={!checked.size}
           className="px-3 py-1.5 rounded-xl text-xs font-black text-slate-500 border border-slate-200 hover:bg-slate-50 disabled:opacity-40">チェックを外す</button>
         <div className="ml-auto flex flex-wrap gap-2">
+          {notice && <span className="self-center text-xs font-black text-amber-700">{notice}</span>}
           <span className="self-center text-xs font-black text-slate-500">チェック {checked.size}件</span>
           <button onClick={handleRouteExport} disabled={!checked.size}
             className="flex items-center gap-1.5 px-4 py-2.5 rounded-2xl text-xs font-black border border-green-900 text-green-900 hover:bg-green-50 disabled:opacity-40">
             <FileSpreadsheet size={14} /> ルート計画書Excel
           </button>
-          <button onClick={openSave} disabled={!checked.size}
+          <button onClick={handleAddTargets} disabled={!checked.size || adding}
             className="flex items-center gap-1.5 px-4 py-2.5 rounded-2xl text-xs font-black bg-green-900 text-white hover:bg-emerald-600 disabled:opacity-40 shadow-lg">
-            <Plus size={14} /> 訪問リストに保存
+            <Plus size={14} /> {adding ? '追加中…' : 'ターゲットに追加'}
           </button>
         </div>
       </div>
-
-      {showSave && (
-        <div className="bg-white rounded-3xl shadow-sm border border-emerald-200 p-5 flex flex-wrap items-end gap-3 no-print">
-          <label className="space-y-1"><div className={labelCls}>保存先</div>
-            <select value={saveDest} onChange={e => setSaveDest(e.target.value)} className={inputCls}>
-              <option value="__new__">新しいリスト</option>
-              {lists.map(l => <option key={l.id} value={l.id}>{l.name}（{l.factories.length}件）に追加</option>)}
-            </select></label>
-          {saveDest === '__new__' && (
-            <label className="space-y-1 flex-1 min-w-[200px]"><div className={labelCls}>リスト名</div>
-              <input value={listName} onChange={e => setListName(e.target.value)} className={inputCls} /></label>
-          )}
-          <button onClick={() => setShowSave(false)} className="px-4 py-2.5 rounded-2xl text-xs font-black text-slate-500 hover:bg-slate-100">やめる</button>
-          <button onClick={handleSaveList} className="px-5 py-2.5 rounded-2xl text-xs font-black bg-green-900 text-white hover:bg-emerald-600">
-            {checked.size}件を保存
-          </button>
-        </div>
-      )}
 
       {/* 一覧 */}
       <div className="bg-white rounded-3xl shadow-sm border border-slate-100 overflow-x-auto">
@@ -4272,8 +4280,9 @@ const NcsTargetTab = ({ index, leaseCompanies, judgeFY, setJudgeFY, lists, statu
           <tbody>
             {shown.map(({ f, judge, isTarget }) => {
               const st = statusOf(f.key);
+              const inPool = poolKeys.has(f.key);
               const inLists = listedIn.get(f.key);
-              const rowCls = inLists ? 'bg-amber-50 hover:bg-amber-100/60' : isTarget ? 'hover:bg-emerald-50/40' : 'bg-slate-50 text-slate-400';
+              const rowCls = inPool ? 'bg-amber-50 hover:bg-amber-100/60' : isTarget ? 'hover:bg-emerald-50/40' : 'bg-slate-50 text-slate-400';
               return (
                 <tr key={f.key} className={`border-b border-slate-100 align-top ${rowCls}`}>
                   <td className="px-3 py-3 text-center">
@@ -4281,8 +4290,8 @@ const NcsTargetTab = ({ index, leaseCompanies, judgeFY, setJudgeFY, lists, statu
                       {checked.has(f.key) ? <CheckSquare size={18} /> : <Square size={18} className="text-slate-300" />}
                     </button>
                   </td>
-                  <td className="px-3 py-3 text-center" title={inLists ? `訪問リスト: ${inLists.join('、')}` : ''}>
-                    {inLists && <Check size={18} strokeWidth={3} className="inline text-amber-600" />}
+                  <td className="px-3 py-3 text-center" title={inPool ? `ターゲット${inLists ? `／訪問リスト: ${inLists.join('、')}` : ''}` : ''}>
+                    {inPool && <Check size={18} strokeWidth={3} className="inline text-amber-600" />}
                   </td>
                   <td className="px-3 py-3 break-words">
                     <div className="font-black text-slate-800">{f.key}
@@ -4433,8 +4442,179 @@ const NcsVisitRowEditor = ({ initial, onSave, onCancel, onRemove }) => {
 
 /** タブ2: 訪問リスト・記録（1行＝1訪問。再訪問は下に行を足す） */
 const NCS_ALL_LISTS = '__ALL_LISTS__';
+const NCS_POOL = '__POOL__';
 
-const NcsListTab = ({ index, lists, activeListId, setActiveListId, visitsByFactory, reload, onVisitSaved, onVisitDeleted }) => {
+/** ターゲット一覧（訪問リストを作る元）。今日行く工場にチェックして訪問リストを作る */
+const NcsPoolView = ({ pool, lists, visitsByFactory, onCreateList, onRemoveTarget }) => {
+  const [keyword, setKeyword] = useState('');
+  const [checked, setChecked] = useState(new Set());
+  const [dest, setDest] = useState('__new__');
+  const [name, setName] = useState(`訪問_${ncsYmd()}`);
+  const [busy, setBusy] = useState(false);
+
+  const listsOfKey = useMemo(() => {
+    const m = new Map();
+    for (const l of lists) for (const x of l.factories) {
+      if (!m.has(x.key)) m.set(x.key, []);
+      m.get(x.key).push(l.name);
+    }
+    return m;
+  }, [lists]);
+  const rows = useMemo(() => {
+    const kw = norm(keyword).replace(/\s+/g, '');
+    return pool
+      .map(x => ({ x, area: areaOf(x.address) }))
+      .filter(({ x, area }) => !kw || norm(`${area}${x.key}${x.address}`).replace(/\s+/g, '').includes(kw))
+      .sort((a, b) => a.area.localeCompare(b.area, 'ja') || a.x.key.localeCompare(b.x.key, 'ja'));
+  }, [pool, keyword]);
+
+  const toggle = key => setChecked(prev => {
+    const n = new Set(prev);
+    n.has(key) ? n.delete(key) : n.add(key);
+    return n;
+  });
+  const picked = () => pool.filter(x => checked.has(x.key));
+
+  const handleCreate = async () => {
+    const fs = picked();
+    if (!fs.length) { alert('訪問リストに入れる工場にチェックしてね'); return; }
+    let list;
+    if (dest === '__new__') {
+      if (!name.trim()) { alert('リスト名を入れてね'); return; }
+      list = { id: newId(), name: name.trim(), createdAt: new Date().toISOString(), factories: fs };
+    } else {
+      const base = lists.find(l => l.id === dest);
+      if (!base) return;
+      const have = new Set(base.factories.map(x => x.key));
+      list = { ...base, factories: [...base.factories, ...fs.filter(x => !have.has(x.key))] };
+    }
+    setBusy(true);
+    try {
+      await onCreateList(list);
+      setChecked(new Set());
+    } catch (e) {
+      alert(`保存に失敗したよ: ${e?.message || e}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const handleRemove = async (x) => {
+    if (!window.confirm(`「${x.key}」をターゲットから外す？（訪問リストと訪問記録はそのまま）`)) return;
+    try {
+      await onRemoveTarget(x.key);
+      setChecked(prev => { const n = new Set(prev); n.delete(x.key); return n; });
+    } catch (e) {
+      alert(`外せなかったよ: ${e?.message || e}`);
+    }
+  };
+  const handleRouteExport = async () => {
+    const fs = picked();
+    if (!fs.length) { alert('ルートに入れる工場にチェックしてね'); return; }
+    try {
+      await writeRoutePlanXlsx(fs.map(x => ({ name: x.key, address: x.address, tel: x.tel, contact: x.contact })));
+    } catch (e) {
+      console.error(e);
+      alert(e?.message || 'ルート計画書の作成に失敗したよ');
+    }
+  };
+
+  const inputCls = 'px-3 py-2 rounded-xl border border-slate-200 bg-white text-sm font-bold text-slate-700 focus:outline-none focus:ring-2 focus:ring-emerald-300';
+  const th = 'px-2 py-2.5 text-[11px] font-black whitespace-nowrap text-left';
+
+  if (!pool.length) {
+    return (
+      <div className="bg-white rounded-3xl shadow-sm border border-slate-100 p-10 text-center text-slate-400 font-bold">
+        まだターゲットがないよ。「ターゲット抽出」で工場にチェックして「ターゲットに追加」してね。
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-end gap-3">
+        <div>
+          <div className="text-lg font-black text-slate-800">ターゲット</div>
+          <div className="text-xs font-bold text-slate-400">{pool.length}工場 — 今日行く工場にチェックして訪問リストを作ってね</div>
+        </div>
+        <input value={keyword} onChange={e => setKeyword(e.target.value)} placeholder="エリア・工場名で絞り込み" className={`${inputCls} ml-auto no-print`} />
+      </div>
+
+      <div className="bg-white rounded-3xl shadow-sm border border-emerald-200 p-4 flex flex-wrap items-center gap-2 no-print">
+        <button onClick={() => setChecked(prev => new Set([...prev, ...rows.map(r => r.x.key)]))}
+          className="px-3 py-1.5 rounded-xl text-xs font-black text-emerald-700 border border-emerald-200 hover:bg-emerald-50">表示中を全部チェック</button>
+        <button onClick={() => setChecked(new Set())} disabled={!checked.size}
+          className="px-3 py-1.5 rounded-xl text-xs font-black text-slate-500 border border-slate-200 hover:bg-slate-50 disabled:opacity-40">チェックを外す</button>
+        <span className="text-xs font-black text-slate-500 mx-1">チェック {checked.size}件</span>
+        <div className="ml-auto flex flex-wrap items-center gap-2">
+          <select value={dest} onChange={e => setDest(e.target.value)} className={inputCls}>
+            <option value="__new__">新しい訪問リスト</option>
+            {lists.map(l => <option key={l.id} value={l.id}>{l.name}（{l.factories.length}件）に追加</option>)}
+          </select>
+          {dest === '__new__' && <input value={name} onChange={e => setName(e.target.value)} className={`${inputCls} w-44`} />}
+          <button onClick={handleRouteExport} disabled={!checked.size}
+            className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-black border border-green-900 text-green-900 hover:bg-green-50 disabled:opacity-40">
+            <FileSpreadsheet size={14} /> ルート計画書Excel
+          </button>
+          <button onClick={handleCreate} disabled={!checked.size || busy}
+            className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-black bg-green-900 text-white hover:bg-emerald-600 disabled:opacity-40 shadow">
+            <Plus size={14} /> {busy ? '保存中…' : dest === '__new__' ? `${checked.size}件で訪問リストを作る` : `${checked.size}件を追加`}
+          </button>
+        </div>
+      </div>
+
+      <div className="bg-white rounded-3xl shadow-sm border border-slate-100 overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead className="bg-green-900 text-white">
+            <tr>
+              <th className={`${th} w-12 text-center`}>選択</th>
+              <th className={th}>エリア</th>
+              <th className={th}>工場名</th>
+              <th className={th}>最終訪問</th>
+              <th className={th}>訪問リスト</th>
+              <th className={`${th} no-print`}></th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map(({ x, area }) => {
+              const vs = visitsByFactory.get(x.key) || [];
+              const last = vs[vs.length - 1];
+              const on = checked.has(x.key);
+              return (
+                <tr key={x.key} onClick={() => toggle(x.key)}
+                  className={`border-t border-slate-100 align-top cursor-pointer ${on ? 'bg-emerald-50' : 'hover:bg-slate-50'}`}>
+                  <td className="px-2 py-2 text-center">
+                    {on ? <CheckSquare size={18} className="inline text-emerald-600" /> : <Square size={18} className="inline text-slate-300" />}
+                  </td>
+                  <td className="px-2 py-2 text-xs font-bold text-slate-600 whitespace-nowrap">{area}</td>
+                  <td className="px-2 py-2">
+                    <div className="font-black text-slate-800 text-sm">{x.key}</div>
+                    <div className="text-[11px] text-slate-400">TEL: {x.tel}</div>
+                  </td>
+                  <td className="px-2 py-2 text-xs whitespace-nowrap">
+                    {last
+                      ? <div className="flex items-center gap-2"><span className="font-bold text-slate-600">{last.date.replace(/-/g, '/')}</span><NcsResultBadge result={last.result} /></div>
+                      : <span className="text-slate-300 font-bold">未訪問</span>}
+                  </td>
+                  <td className="px-2 py-2 text-[11px] font-bold text-emerald-700">{(listsOfKey.get(x.key) || []).join('、')}</td>
+                  <td className="px-2 py-2 whitespace-nowrap no-print" onClick={e => e.stopPropagation()}>
+                    <button onClick={() => handleRemove(x)} title="ターゲットから外す（訪問リスト・訪問記録はそのまま）"
+                      className="px-2 py-1 rounded-lg text-[11px] font-black text-slate-400 hover:text-rose-500 hover:bg-rose-50">外す</button>
+                  </td>
+                </tr>
+              );
+            })}
+            {!rows.length && (
+              <tr><td colSpan={6} className="px-3 py-10 text-center text-slate-400 font-bold">条件に合う工場がないよ</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+};
+
+
+const NcsListTab = ({ index, lists, pool, activeListId, setActiveListId, visitsByFactory, reload, onVisitSaved, onVisitDeleted, onCreateList, onRemoveTarget }) => {
   const [editId, setEditId] = useState(null);     // 書き直し中の訪問記録
   const [addingKey, setAddingKey] = useState(null); // 「＋次回」で行を足している工場
   const [showYears, setShowYears] = useState(false); // 年次実績比較を出す
@@ -4449,13 +4629,41 @@ const NcsListTab = ({ index, lists, activeListId, setActiveListId, visitsByFacto
     }
     return { allList: { id: NCS_ALL_LISTS, name: 'すべてのリスト', factories }, listsOfKey: seen };
   }, [lists]);
-  const isAll = activeListId === NCS_ALL_LISTS && lists.length > 0;
-  const list = isAll ? allList : (lists.find(l => l.id === activeListId) || lists[0] || null);
+  const isPool = activeListId === NCS_POOL || !lists.length;
+  const isAll = !isPool && activeListId === NCS_ALL_LISTS;
+  const list = isPool ? null : isAll ? allList : (lists.find(l => l.id === activeListId) || lists[0]);
 
-  if (!list) {
+  const select = id => { setActiveListId(id); setEditId(null); setAddingKey(null); };
+  const pillCls = on => `px-4 py-2 rounded-2xl text-xs font-black border transition-all ${
+    on ? 'bg-emerald-600 text-white border-emerald-600 shadow' : 'bg-white text-slate-600 border-slate-200 hover:border-emerald-300'}`;
+  const pills = (
+    <div className="flex flex-wrap items-center gap-2 no-print">
+      <button onClick={() => select(NCS_POOL)}
+        className={`px-4 py-2 rounded-2xl text-xs font-black border transition-all ${
+          isPool ? 'bg-amber-500 text-white border-amber-500 shadow' : 'bg-amber-50 text-amber-700 border-amber-200 hover:border-amber-400'}`}>
+        ターゲット <span className="opacity-70">{pool.length}</span>
+      </button>
+      {lists.length > 0 && <span className="text-slate-300 font-black">｜</span>}
+      {lists.length > 0 && (
+        <button onClick={() => select(NCS_ALL_LISTS)} className={pillCls(isAll)}>
+          すべて <span className="opacity-70">{allList.factories.length}</span>
+        </button>
+      )}
+      {lists.map(l => (
+        <button key={l.id} onClick={() => select(l.id)} className={pillCls(!isPool && !isAll && l.id === list?.id)}>
+          {l.name} <span className="opacity-70">{l.factories.length}</span>
+        </button>
+      ))}
+    </div>
+  );
+
+  if (isPool) {
     return (
-      <div className="bg-white rounded-3xl shadow-sm border border-slate-100 p-10 text-center text-slate-400 font-bold">
-        まだ訪問リストがないよ。「ターゲット抽出」で工場にチェックして「訪問リストに保存」してね。
+      <div className="space-y-6">
+        {pills}
+        <NcsPoolView pool={pool} lists={lists} visitsByFactory={visitsByFactory}
+          onCreateList={async (newList) => { await onCreateList(newList); select(newList.id); }}
+          onRemoveTarget={onRemoveTarget} />
       </div>
     );
   }
@@ -4513,21 +4721,7 @@ const NcsListTab = ({ index, lists, activeListId, setActiveListId, visitsByFacto
 
   return (
     <div className="space-y-6">
-      {/* リスト選択 */}
-      <div className="flex flex-wrap gap-2 no-print">
-        <button onClick={() => { setActiveListId(NCS_ALL_LISTS); setEditId(null); setAddingKey(null); }}
-          className={`px-4 py-2 rounded-2xl text-xs font-black border transition-all ${
-            isAll ? 'bg-emerald-600 text-white border-emerald-600 shadow' : 'bg-white text-slate-600 border-slate-200 hover:border-emerald-300'}`}>
-          すべて <span className="opacity-70">{allList.factories.length}</span>
-        </button>
-        {lists.map(l => (
-          <button key={l.id} onClick={() => { setActiveListId(l.id); setEditId(null); setAddingKey(null); }}
-            className={`px-4 py-2 rounded-2xl text-xs font-black border transition-all ${
-              l.id === list.id ? 'bg-emerald-600 text-white border-emerald-600 shadow' : 'bg-white text-slate-600 border-slate-200 hover:border-emerald-300'}`}>
-            {l.name} <span className="opacity-70">{l.factories.length}</span>
-          </button>
-        ))}
-      </div>
+      {pills}
 
       <div className="flex flex-wrap items-center gap-2">
         <div>
