@@ -34,10 +34,12 @@ describe('得意先のまとめ・除外', () => {
     expect(reportClientName('日本カーソリューションズ(株) サービスサポート名古屋エリアチーム')).toBe('名古屋チーム');
     expect(reportClientName('オリックス自動車(株)大阪フロント課')).toBe('オリックス自動車(株)大阪フロント課');
   });
-  it('U-car・サービスカンパニーは外す', () => {
+  it('U-car・サービスカンパニー・課名なしのオリックス自動車(株)は外す', () => {
     expect(isExcludedClient('オリックス自動車(株) U-car神戸店')).toBe(true);
     expect(isExcludedClient('ｵﾘｯｸｽ自動車(株) ｻｰﾋﾞｽｶﾝﾊﾟﾆｰ福岡支店')).toBe(true);
     expect(isExcludedClient('オリックス自動車(株)大阪フロント課')).toBe(false);
+    expect(isExcludedClient('オリックス自動車(株)')).toBe(true);
+    expect(isExcludedClient('ｵﾘｯｸｽ自動車㈱')).toBe(true);
   });
   it('NCS の2つのチームが1つの得意先になり、外した得意先は出てこない', () => {
     const idx = buildLeaseReportIndex([

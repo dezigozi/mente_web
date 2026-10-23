@@ -92,4 +92,19 @@ describe('LeaseReportView', () => {
     fireEvent.click(screen.getByRole('button', { name: '2024年度' }));
     expect(within(screen.getAllByRole('table')[0]).getByText('トヨタ TRH200')).toBeTruthy();
   });
+
+  it('よく出る車種：上位22車種の残りは「その他」にまとめ、最後に「計」', () => {
+    const many = Array.from({ length: 25 }, (_, i) => row({ carName: 'ﾄﾖﾀ', carType: `T${String(i).padStart(2, '0')}-1`, quantity: 30 - i }));
+    render(<LeaseReportView rows={many} />);
+    fireEvent.click(screen.getByRole('button', { name: 'よく出る車種' }));
+    const t = screen.getAllByRole('table')[0];
+    const trs = within(t).getAllByRole('row').slice(1);
+    expect(trs.length).toBe(22 + 2);
+    // 残り3車種 = 8+7+6
+    expect(trs[22].textContent).toMatch(/^その他（3車種）21/);
+    expect(trs[23].textContent).toMatch(/^計/);
+    expect(trs[23].textContent).toContain(String(many.reduce((a, r) => a + r.quantity, 0)));
+    fireEvent.click(screen.getByRole('button', { name: '全部表示' }));
+    expect(within(screen.getAllByRole('table')[0]).getAllByRole('row').length).toBe(1 + 25 + 1);
+  });
 });
