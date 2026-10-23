@@ -3830,7 +3830,7 @@ const NcsResultBadge = ({ result }) => (
 
 const NcsVisitView = ({ rows, leaseCompanies }) => {
   const [tab, setTab] = useState('target'); // 'target' | 'list' | 'result'
-  const [activeListId, setActiveListId] = useState(null);
+  const [activeListId, setActiveListId] = useState(NCS_POOL); // 訪問リスト画面は「ターゲット」を最初に開く
 
   // ---- 実績（全行1回だけ走査して工場ごとにまとめる） ----
   const index = useMemo(() => buildFactoryIndex(rows, ncsItemOk), [rows]);
@@ -4705,7 +4705,7 @@ const NcsListTab = ({ index, lists, pool, activeListId, setActiveListId, visitsB
   const handleDeleteList = () => {
     const n = list.factories.reduce((s, x) => s + (visitsByFactory.get(x.key) || []).filter(v => v.listId === list.id).length, 0);
     if (!window.confirm(`リスト「${list.name}」を消す？${n ? `\nこのリストで付けた訪問記録 ${n}件も一緒に消えるよ。` : ''}`)) return;
-    run(async () => { await deleteList(list.id); setActiveListId(null); });
+    run(async () => { await deleteList(list.id); setActiveListId(NCS_POOL); });
   };
   const handleRouteExport = async () => {
     try {
