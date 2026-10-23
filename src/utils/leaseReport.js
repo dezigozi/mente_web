@@ -5,6 +5,8 @@
  * - 数字は数量（本数）。年度は4月始まり（2025年度 = 2025/4〜2026/3）
  * - 最新年度がデータ途中なら、前年比は前年の同じ月までと比べる
  * - 工場は送り先から作った社名（branchCompany）で束ねる（NCS訪問管理と同じキー）
+ * - 得意先は U-car・サービスカンパニーを外し、NCS は「東京エリアチーム」と「東京チーム」を「東京チーム」にまとめる
+ * - 車種は 車種名（メーカー）＋車輌型式のハイフン前（例「イスズ NPR88」）
  */
 
 export const REBUILD_ITEMS = ['オルタネーター', 'スターター', 'コンプレッサー'];
@@ -16,6 +18,26 @@ export const ORIX_LEASE = 'OR';
 
 const normText = s => String(s ?? '').normalize('NFKC').trim();
 const factoryKeyOf = r => r.branchCompany || r.branch || '(未分類)';
+
+/** レポートから外す得意先（オリックスの U-car 店・サービスカンパニー） */
+export function isExcludedClient(name) {
+  return /U-?car|サービスカンパニー/i.test(normText(name));
+}
+
+/** 得意先名のまとめ（NCS は「◯◯エリアチーム」「◯◯チーム」→「◯◯チーム」） */
+export function reportClientName(name) {
+  const t = normText(name);
+  const m = t.match(/(?:サービスサポート部?|サービス部)\s*(.+?)(?:エリア)?チーム/);
+  return m ? `${m[1]}チーム` : t;
+}
+
+/** 車種（メーカー＋型式のハイフン前） */
+export function carKeyOf(r) {
+  const maker = normText(r.carName);
+  const type = normText(r.carType).split('-')[0].trim().toUpperCase();
+  if (!maker && !type) return '(不明)';
+  return [maker, type || '(型式なし)'].filter(Boolean).join(' ');
+}
 
 /** 4月始まりの年度 */
 export function fiscalYearApr(y, m) {
@@ -38,6 +60,7 @@ export function monthOfFiscalIndex(fm) {
  */
 export function buildLeaseReportIndex(rows) {
   const leases = new Map();
+  const cars = new Map();
   const factories = new Map();
   let lastYm = 0;
   for (const r of rows) {
@@ -51,7 +74,8 @@ export function buildLeaseReportIndex(rows) {
     if (ym > lastYm) lastYm = ym;
 
     const lease = r.leaseCompany || '(未分類)';
-    const client = r.orderClient || '(未分類)';
+    if (isExcludedClient(r.orderClient)) continue;
+    const client = r.orderClient ? reportClientName(r.orderClient) : '(未分類)';
     const factory = factoryKeyOf(r);
     const mid = normText(r.itemMid) || '(なし)';
     const fy = fiscalYearApr(y, m);
@@ -64,6 +88,14 @@ export function buildLeaseReportIndex(rows) {
     if (c) c.qty += q;
     else cells.set(k, { client, factory, fy, fm, item, mid, qty: q });
 
+    let carCells = cars.get(lease);
+    if (!carCells) { carCells = new Map(); cars.set(lease, carCells); }
+    const car = carKeyOf(r);
+    const ck = `${client}\t${fy}\t${fm}\t${item}\t${car}`;
+    const cc = carCells.get(ck);
+    if (cc) cc.qty += q;
+    else carCells.set(ck, { client, fy, fm, item, car, qty: q });
+
     if (factory !== '(未分類)') {
       let f = factories.get(factory);
       if (!f) { f = { key: factory, pref: '', address: '' }; factories.set(factory, f); }
@@ -74,6 +106,7 @@ export function buildLeaseReportIndex(rows) {
   const lastY = Math.floor(lastYm / 100), lastM = lastYm % 100;
   return {
     leases,
+    cars,
     factories,
     lastFy: lastYm ? fiscalYearApr(lastY, lastM) : 0,
     lastFm: lastYm ? fiscalMonthIndex(lastM) : 11,
@@ -213,4 +246,36 @@ export function summarizeClients(index, lease, clients) {
   const rows = [...map.values()].map(x => ({ ...x, sum: sumAll(x.total) }));
   rows.sort((a, b) => b.sum - a.sum || a.client.localeCompare(b.client, 'ja'));
   return { info, rows, total, totalItems };
+}
+
+/**
+ * よく出る車種（品目ごと・年度ごとのランキング）
+ * @returns {{ years: number[], items: Map<string, { total: number, prevTotal: number, rows: { car, qty, prev }[] }> }}
+ *   prev は前年度（途中の年度は前年同期間）の本数
+ */
+export function summarizeCars(index, lease, clients, fy) {
+  const all = index.cars.get(lease);
+  const yearSet = new Set();
+  const per = new Map(REBUILD_ITEMS.map(it => [it, new Map()]));
+  const partial = fy === index.lastFy && index.lastFm < 11;
+  all?.forEach(c => {
+    if (clients && clients.size > 0 && !clients.has(c.client)) return;
+    yearSet.add(c.fy);
+    const isCurr = c.fy === fy;
+    const isPrev = c.fy === fy - 1 && (!partial || c.fm <= index.lastFm);
+    if (!isCurr && !isPrev) return;
+    const m = per.get(c.item);
+    let x = m.get(c.car);
+    if (!x) { x = { car: c.car, qty: 0, prev: 0 }; m.set(c.car, x); }
+    if (isCurr) x.qty += c.qty; else x.prev += c.qty;
+  });
+  const items = new Map();
+  per.forEach((m, it) => {
+    const rows = [...m.values()].filter(x => x.qty > 0)
+      .sort((a, b) => b.qty - a.qty || a.car.localeCompare(b.car, 'ja'));
+    let total = 0, prevTotal = 0;
+    m.forEach(x => { total += x.qty; prevTotal += x.prev; });
+    items.set(it, { total, prevTotal, rows });
+  });
+  return { years: [...yearSet].sort((a, b) => a - b), items };
 }

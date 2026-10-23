@@ -188,6 +188,8 @@ export function parseCsv(csv, { keepRaw = true } = {}) {
   const COL_PHONE  = idx['宅配先電話番号'] ?? 11;
   const COL_BRANCH = idx['送り先名']      ?? 12;
   const COL_ADDR1  = idx['住所１']        ?? 14;
+  const COL_CAR_NAME = idx['車種名']      ?? -1;
+  const COL_CAR_TYPE = idx['車輌型式１']  ?? -1;
   const COL_MAKER  = idx['メーカーコード'] ?? 17;
   const COL_CODE   = idx['品番']          ?? 31;
   const COL_NAME   = idx['商品名']        ?? 32;
@@ -355,6 +357,8 @@ export function parseCsv(csv, { keepRaw = true } = {}) {
       slipType:     vals[COL_SLIP_TYPE]?.trim() || '',
       receiverName: vals[COL_RECV_NAME]?.trim() || '',
       makerCode:    vals[COL_MAKER]?.trim()     || '',
+      carName:      vals[COL_CAR_NAME]?.trim()  || '',
+      carType:      vals[COL_CAR_TYPE]?.trim()  || '',
       unitPrice,
       quantity: qty,
       sales,
