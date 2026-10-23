@@ -4037,8 +4037,16 @@ const NcsVisitView = ({ rows, leaseCompanies }) => {
         </div>
         {storeLoading && <Loader2 size={16} className="animate-spin text-slate-400" />}
 
+        {/* 実績CSVの最終日（成果チェックはここまでの受注で判定） */}
+        {index.lastDate > 0 && (
+          <span className="ml-auto inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-white border border-slate-200 text-xs font-black text-slate-600 shadow-sm">
+            <Calendar size={13} className="text-emerald-600" />
+            最新データ {fmtDateNum(index.lastDate)} 現在
+          </span>
+        )}
+
         {/* ⋯ メニュー */}
-        <div className="relative ml-auto">
+        <div className={`relative ${index.lastDate > 0 ? '' : 'ml-auto'}`}>
           <button onClick={() => setShowMenu(v => !v)}
             className="flex items-center justify-center w-10 h-10 rounded-2xl bg-white border border-slate-200 text-slate-500 hover:text-emerald-600 hover:border-emerald-300 transition-colors shadow-sm">
             <MoreHorizontal size={16} />
