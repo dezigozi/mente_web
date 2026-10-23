@@ -7,7 +7,7 @@ import {
   AlertCircle, Loader2, XCircle, Eye, EyeOff,
   CheckSquare, Square, Menu, X, Package, Search, ArrowUpDown,
   MoreHorizontal, SlidersHorizontal, RotateCcw, MapPin, BookOpen,
-  ClipboardList, Trash2, Upload, Download, Plus, History, Target, Pencil, Car,
+  ClipboardList, Trash2, Upload, Download, Plus, History, Target, Pencil, Check, Car,
 } from 'lucide-react';
 import { clearCache } from './utils/db';
 import { loadCsvData, loadCsvDataFull, generateFullDataCsvContent, loadTabData } from './utils/csvLoader';
@@ -4089,6 +4089,15 @@ const NcsTargetTab = ({ index, leaseCompanies, judgeFY, setJudgeFY, lists, statu
   const shownYears = useMemo(() => index.fiscalYears.filter(fy => fy <= judgeFY).slice(-4), [index, judgeFY]);
   const compareSet = compareLeases.size ? compareLeases : null;
   const otherLeases = useMemo(() => leaseCompanies.filter(l => l !== NCS && l !== '(未分類)'), [leaseCompanies]);
+  /** 訪問リストに入っている工場 → リスト名 */
+  const listedIn = useMemo(() => {
+    const m = new Map();
+    for (const l of lists) for (const x of l.factories) {
+      if (!m.has(x.key)) m.set(x.key, []);
+      m.get(x.key).push(l.name);
+    }
+    return m;
+  }, [lists]);
 
   const toggleLease = l => setCompareLeases(prev => {
     const n = new Set(prev);
@@ -4231,10 +4240,18 @@ const NcsTargetTab = ({ index, leaseCompanies, judgeFY, setJudgeFY, lists, statu
 
       {/* 一覧 */}
       <div className="bg-white rounded-3xl shadow-sm border border-slate-100 overflow-x-auto">
-        <table className="w-full text-sm">
+        <table className="w-full min-w-[900px] table-fixed text-sm">
+          <colgroup>
+            <col style={{ width: 56 }} />
+            <col style={{ width: 72 }} />
+            <col style={{ width: 280 }} />
+            {shownYears.map(fy => <React.Fragment key={fy}><col /><col /></React.Fragment>)}
+            <col style={{ width: 130 }} />
+          </colgroup>
           <thead className="bg-green-900 text-white sticky top-0 z-10">
             <tr>
               <th className={NCS_TH} rowSpan={2}>選択</th>
+              <th className={NCS_TH} rowSpan={2}>ターゲット</th>
               <th className={`${NCS_TH} text-left`} rowSpan={2}>工場</th>
               {shownYears.map(fy => (
                 <th key={fy} className={`${NCS_TH} border-l border-green-800 ${fy === judgeFY ? 'bg-green-800' : ''}`} colSpan={2}>
@@ -4255,14 +4272,19 @@ const NcsTargetTab = ({ index, leaseCompanies, judgeFY, setJudgeFY, lists, statu
           <tbody>
             {shown.map(({ f, judge, isTarget }) => {
               const st = statusOf(f.key);
+              const inLists = listedIn.get(f.key);
+              const rowCls = inLists ? 'bg-amber-50 hover:bg-amber-100/60' : isTarget ? 'hover:bg-emerald-50/40' : 'bg-slate-50 text-slate-400';
               return (
-                <tr key={f.key} className={`border-b border-slate-100 align-top ${isTarget ? 'hover:bg-emerald-50/40' : 'bg-slate-50 text-slate-400'}`}>
+                <tr key={f.key} className={`border-b border-slate-100 align-top ${rowCls}`}>
                   <td className="px-3 py-3 text-center">
                     <button onClick={() => toggleCheck(f.key)} className="text-emerald-600">
                       {checked.has(f.key) ? <CheckSquare size={18} /> : <Square size={18} className="text-slate-300" />}
                     </button>
                   </td>
-                  <td className="px-3 py-3 min-w-[260px]">
+                  <td className="px-3 py-3 text-center" title={inLists ? `訪問リスト: ${inLists.join('、')}` : ''}>
+                    {inLists && <Check size={18} strokeWidth={3} className="inline text-amber-600" />}
+                  </td>
+                  <td className="px-3 py-3 break-words">
                     <div className="font-black text-slate-800">{f.key}
                       {!isTarget && <span className="ml-2 text-[10px] font-black px-2 py-0.5 rounded-lg bg-slate-200 text-slate-500">NCSあり</span>}
                     </div>
@@ -4296,7 +4318,7 @@ const NcsTargetTab = ({ index, leaseCompanies, judgeFY, setJudgeFY, lists, statu
               );
             })}
             {!shown.length && (
-              <tr><td colSpan={3 + shownYears.length * 2} className="px-3 py-10 text-center text-slate-400 font-bold">条件に合う工場がないよ</td></tr>
+              <tr><td colSpan={4 + shownYears.length * 2} className="px-3 py-10 text-center text-slate-400 font-bold">条件に合う工場がないよ</td></tr>
             )}
           </tbody>
         </table>
