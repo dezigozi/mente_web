@@ -7,7 +7,7 @@ import {
   AlertCircle, Loader2, XCircle, Eye, EyeOff,
   CheckSquare, Square, Menu, X, Package, Search, ArrowUpDown,
   MoreHorizontal, SlidersHorizontal, RotateCcw, MapPin, BookOpen,
-  ClipboardList, Trash2, Upload, Download, Plus, History, Target, Pencil,
+  ClipboardList, Trash2, Upload, Download, Plus, History, Target, Pencil, Car,
 } from 'lucide-react';
 import { clearCache } from './utils/db';
 import { loadCsvData, loadCsvDataFull, generateFullDataCsvContent, loadTabData } from './utils/csvLoader';
@@ -23,7 +23,7 @@ import {
 } from './utils/visitStore';
 import {
   REBUILD_ITEMS, WEST_ORIX_CLIENT_KEYWORDS, ORIX_LEASE, buildLeaseReportIndex, listClients,
-  defaultClientSelection, summarizeFactories, summarizeClients, prevBase, shortClientName, sumSeries,
+  defaultClientSelection, summarizeFactories, summarizeClients, summarizeCars, prevBase, monthOfFiscalIndex, shortClientName, sumSeries,
 } from './utils/leaseReport';
 import areaCodes from './data/areaCodes.json';
 /**
@@ -1356,12 +1356,24 @@ const App = () => {
   );
 };
 
-// ===== リース会社別レポート（工場別リビルト実績 / 支店別 オルタ・スタ・コンプ） =====
+// ===== リース会社別レポート（工場別リビルト実績 / 支店別実績 / よく出る車種） =====
 
 const LEASE_REPORT_ITEM_LABEL = { 'オルタネーター': 'オルタ', 'スターター': 'スターター', 'コンプレッサー': 'コンプレッサー' };
 const LEASE_REPORT_LEASE_NAME = { OR: 'オリックス自動車' };
 const LEASE_REPORT_RENDER_STEP = 200;
+const LEASE_REPORT_CAR_TOP = 30;
+const LEASE_REPORT_TAB_TITLE = {
+  factory: '工場別リビルト実績',
+  client: '支店別実績（オルタ・スターター・コンプレッサー）',
+  car: 'よく出る車種（オルタ・スターター・コンプレッサー）',
+};
 const leaseReportLabel = l => (LEASE_REPORT_LEASE_NAME[l] ? `${l}（${LEASE_REPORT_LEASE_NAME[l]}）` : l);
+/** 提出用の印刷（工場別・支店別）：ブラウザのヘッダー/フッターを消すため余白0、余白は各ページに中で付ける */
+const LEASE_REPORT_PRINT_TITLE = { factory: '工場別ご実績', client: '支店別ご実績' };
+const LEASE_REPORT_PRINT_CSS = `@media print {
+  @page { size: A4; margin: 0; }
+  .lease-print-sheet { padding: 10mm 12mm; -webkit-box-decoration-break: clone; box-decoration-break: clone; }
+}`;
 
 /** 年度の見出し（途中の年度は「〜◯月 途中」） */
 const LeaseYearTh = ({ fy, info }) => (
@@ -1399,7 +1411,9 @@ const LeaseReportView = memo(({ rows }) => {
 
   const [lease, setLease] = useState(ORIX_LEASE);
   const [clients, setClients] = useState(() => defaultClientSelection(index, ORIX_LEASE));
-  const [tab, setTab] = useState('factory'); // 'factory' | 'client'
+  const [tab, setTab] = useState('factory'); // 'factory' | 'client' | 'car'
+  const [carFy, setCarFy] = useState(index.lastFy);
+  const [carShowAll, setCarShowAll] = useState(false);
   const [query, setQuery] = useState('');
   const [openKey, setOpenKey] = useState(null);
   const [renderLimit, setRenderLimit] = useState(LEASE_REPORT_RENDER_STEP);
@@ -1415,7 +1429,7 @@ const LeaseReportView = memo(({ rows }) => {
   const clientList = useMemo(() => listClients(index, lease), [index, lease]);
   const westDefault = useMemo(() => defaultClientSelection(index, lease), [index, lease]);
 
-  const resetView = () => { setOpenKey(null); setRenderLimit(LEASE_REPORT_RENDER_STEP); };
+  const resetView = () => { setOpenKey(null); setRenderLimit(LEASE_REPORT_RENDER_STEP); setCarShowAll(false); };
   const changeLease = (l) => {
     setLease(l);
     setClients(defaultClientSelection(index, l));
@@ -1439,9 +1453,17 @@ const LeaseReportView = memo(({ rows }) => {
     () => (tab === 'client' ? summarizeClients(index, lease, clients) : null),
     [tab, index, lease, clients],
   );
+  const carSum = useMemo(
+    () => (tab === 'car' ? summarizeCars(index, lease, clients, carFy) : null),
+    [tab, index, lease, clients, carFy],
+  );
   const sum = tab === 'factory' ? factorySum : clientSum;
-  const info = sum.info;
-  const years = info.years;
+  const info = sum?.info;
+  const years = info?.years || [];
+  const carPartial = carFy === index.lastFy && index.lastFm < 11;
+  const carFyLabel = fy => (fy === index.lastFy && index.lastFm < 11
+    ? `${fy}年度（4月〜${monthOfFiscalIndex(index.lastFm)}月 途中）`
+    : `${fy}年度（${fy}/4〜${fy + 1}/3）`);
 
   const shownFactories = useMemo(() => {
     if (!factorySum) return [];
@@ -1452,6 +1474,7 @@ const LeaseReportView = memo(({ rows }) => {
 
   /** 表の一番下の「計」（工場別は絞り込み後の工場、支店別は選んだ得意先） */
   const bottomTotal = useMemo(() => {
+    if (tab === 'car') return null;
     if (tab === 'client') return clientSum.rows.length ? { total: clientSum.total, items: clientSum.totalItems } : null;
     if (!shownFactories.length) return null;
     return {
@@ -1460,6 +1483,9 @@ const LeaseReportView = memo(({ rows }) => {
     };
   }, [tab, clientSum, shownFactories]);
 
+  const printTitle = LEASE_REPORT_PRINT_TITLE[tab]
+    ? `${LEASE_REPORT_LEASE_NAME[lease] || lease}様　${LEASE_REPORT_PRINT_TITLE[tab]}`
+    : null;
   const scopeText = clients.size === 0
     ? '全得意先'
     : (lease === ORIX_LEASE && clients.size === westDefault.size && [...westDefault].every(n => clients.has(n))
@@ -1471,7 +1497,13 @@ const LeaseReportView = memo(({ rows }) => {
     const line = (cells) => cells.map(ncsCsvQ).join(',');
     const yVals = s => years.flatMap(fy => [s.byFy.get(fy) || 0, leaseYoYText(s, fy, info)]);
     const out = [];
-    if (tab === 'factory') {
+    if (tab === 'car') {
+      out.push(line(['品目', '順位', '車種', `${carFy}年度`, carPartial ? '前年同期間' : `${carFy - 1}年度`, '前年比%']));
+      REBUILD_ITEMS.forEach(it => carSum.items.get(it).rows.forEach((r, i) => {
+        const y = calcYoY(r.qty, r.prev);
+        out.push(line([it, i + 1, r.car, r.qty, r.prev, y == null ? '' : y]));
+      }));
+    } else if (tab === 'factory') {
       out.push(line(['工場', '都道府県', '品目', ...yCols]));
       for (const f of shownFactories) {
         out.push(line([f.key, f.pref, '計', ...yVals(f.total)]));
@@ -1492,12 +1524,12 @@ const LeaseReportView = memo(({ rows }) => {
         REBUILD_ITEMS.forEach(it => out.push(line(['計', it, ...yVals(bottomTotal.items.get(it))])));
       }
     }
-    const kind = tab === 'factory' ? '工場別リビルト実績' : '支店別オルタスタコンプ';
+    const kind = { factory: '工場別リビルト実績', client: '支店別実績', car: `よく出る車種_${carFy}年度` }[tab];
     ncsDownload(new Blob(['﻿' + out.join('\r\n')], { type: 'text/csv;charset=utf-8' }), `${lease}_${kind}.csv`);
   };
 
   const handlePrint = () => {
-    flushSync(() => setRenderLimit(Infinity));
+    flushSync(() => { setRenderLimit(Infinity); setCarShowAll(true); });
     window.print();
   };
 
@@ -1534,7 +1566,8 @@ const LeaseReportView = memo(({ rows }) => {
         </div>
         <div className="inline-flex flex-wrap gap-1 bg-slate-100 p-1.5 rounded-3xl">
           {tabBtn('factory', '工場別リビルト実績', Building2)}
-          {tabBtn('client', '支店別 オルタ・スタ・コンプ', Layers)}
+          {tabBtn('client', '支店別実績', Layers)}
+          {tabBtn('car', 'よく出る車種', Car)}
         </div>
         <div className="ml-auto flex gap-2">
           <button onClick={handleCsv} className="flex items-center gap-2 px-4 py-2.5 rounded-2xl text-xs font-black bg-white border border-slate-200 text-slate-600 hover:text-emerald-600 hover:border-emerald-300 shadow-sm">
@@ -1571,13 +1604,71 @@ const LeaseReportView = memo(({ rows }) => {
         </div>
       </div>
 
-      <div className="bg-white rounded-3xl shadow-sm border border-slate-100 p-4 md:p-6">
-        <div className="mb-3 font-black text-slate-800">
-          {leaseReportLabel(lease)}　{tab === 'factory' ? '工場別リビルト実績' : '支店別 オルタ・スターター・コンプレッサー利用'}
+      <div className={`bg-white rounded-3xl shadow-sm border border-slate-100 p-4 md:p-6 ${
+        printTitle ? 'lease-print-sheet print:!mt-0 print:rounded-none print:border-0 print:shadow-none' : ''}`}>
+        {printTitle && <style>{LEASE_REPORT_PRINT_CSS}</style>}
+        {printTitle && <h1 className="hidden print:block mb-4 text-xl font-black text-slate-900">{printTitle}</h1>}
+        <div className={`mb-3 font-black text-slate-800 ${printTitle ? 'print:hidden' : ''}`}>
+          {leaseReportLabel(lease)}　{LEASE_REPORT_TAB_TITLE[tab]}
+          {tab === 'car' && <span className="ml-2 text-sm font-black text-emerald-700">{carFyLabel(carFy)}</span>}
           <span className="ml-2 text-xs font-bold text-slate-500">{scopeText}</span>
         </div>
         <div className="overflow-x-auto">
-          {tab === 'factory' ? (
+          {tab === 'car' ? (
+            <div className="space-y-4">
+              <div className="flex flex-wrap items-center gap-1.5 no-print">
+                <span className="text-xs font-black text-slate-500 mr-1">年度</span>
+                {carSum.years.map(fy => (
+                  <button key={fy} onClick={() => { setCarFy(fy); setCarShowAll(false); }} className={chipCls(carFy === fy)}>{fy}年度</button>
+                ))}
+              </div>
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                {REBUILD_ITEMS.map(it => {
+                  const g = carSum.items.get(it);
+                  const shown = carShowAll ? g.rows : g.rows.slice(0, LEASE_REPORT_CAR_TOP);
+                  return (
+                    <div key={it} className="print-group border border-slate-100 rounded-2xl overflow-hidden">
+                      <table className="w-full text-xs">
+                        <thead className="bg-green-900 text-white">
+                          <tr>
+                            <th className="px-2 py-2 text-right font-black w-8">#</th>
+                            <th className="px-2 py-2 text-left font-black">{LEASE_REPORT_ITEM_LABEL[it]}</th>
+                            <th className="px-3 py-2 text-right font-black whitespace-nowrap">
+                              {g.total.toLocaleString()}本<NcsYoY curr={g.total} prev={g.prevTotal} />
+                            </th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {shown.map((r, i) => (
+                            <tr key={r.car} className="border-b border-slate-50">
+                              <td className="px-2 py-1 text-right font-bold text-slate-400">{i + 1}</td>
+                              <td className="px-2 py-1 font-bold text-slate-700">{r.car}</td>
+                              <td className="px-3 py-1 text-right whitespace-nowrap font-black text-slate-800">
+                                {r.qty.toLocaleString()}<NcsYoY curr={r.qty} prev={r.prev} />
+                              </td>
+                            </tr>
+                          ))}
+                          {!g.rows.length && (
+                            <tr><td colSpan={3} className="px-3 py-8 text-center text-slate-400 font-bold">データがないよ</td></tr>
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  );
+                })}
+              </div>
+              {!carShowAll && REBUILD_ITEMS.some(it => carSum.items.get(it).rows.length > LEASE_REPORT_CAR_TOP) && (
+                <div className="flex justify-center no-print">
+                  <button onClick={() => setCarShowAll(true)} className="px-4 py-2 rounded-xl text-xs font-black bg-slate-100 text-slate-600 hover:bg-emerald-50">
+                    全部表示（いまは上位{LEASE_REPORT_CAR_TOP}車種）
+                  </button>
+                </div>
+              )}
+              <div className="text-[11px] font-bold text-slate-400">
+                車種＝車種名（メーカー）＋車輌型式のハイフンより前。前年比は{carPartial ? '前年同期間' : '前年度'}と比べてるよ
+              </div>
+            </div>
+          ) : tab === 'factory' ? (
             <table className="w-full text-xs">
               <thead className="bg-green-900 text-white">
                 <tr>
@@ -1660,6 +1751,7 @@ const LeaseReportView = memo(({ rows }) => {
             <button onClick={() => setRenderLimit(Infinity)} className="px-4 py-2 rounded-xl text-xs font-black bg-slate-100 text-slate-600 hover:bg-emerald-50">全部表示</button>
           </div>
         )}
+        {printTitle && <div className="hidden print:block mt-6 text-right text-sm font-black text-slate-900">アライ電機産業株式会社</div>}
       </div>
     </div>
   );

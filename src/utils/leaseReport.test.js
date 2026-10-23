@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   buildLeaseReportIndex, listClients, defaultClientSelection, summarizeFactories, summarizeClients,
-  prevBase, fiscalYearApr, shortClientName,
+  prevBase, fiscalYearApr, shortClientName, reportClientName, isExcludedClient, carKeyOf, summarizeCars,
 } from './leaseReport.js';
 import { parseCsv } from './csvParse.js';
 
@@ -24,6 +24,55 @@ describe('shortClientName', () => {
     expect(shortClientName('ｵﾘｯｸｽ自動車(株) ｻｰﾋﾞｽｶﾝﾊﾟﾆｰ福岡支店')).toBe('サービスカンパニー福岡支店');
     expect(shortClientName('日本カーソリューションズ㈱ 東日本サービス部東京チーム')).toBe('東日本サービス部東京チーム');
     expect(shortClientName('MAL本社')).toBe('MAL本社');
+  });
+});
+
+describe('得意先のまとめ・除外', () => {
+  it('NCS はエリアチームとチームを「◯◯チーム」にまとめる', () => {
+    expect(reportClientName('日本カーソリューションズ(株) 東日本サービス部東京チーム')).toBe('東京チーム');
+    expect(reportClientName('日本カーソリューションズ(株) サービスサポート部東京エリアチーム')).toBe('東京チーム');
+    expect(reportClientName('日本カーソリューションズ(株) サービスサポート名古屋エリアチーム')).toBe('名古屋チーム');
+    expect(reportClientName('オリックス自動車(株)大阪フロント課')).toBe('オリックス自動車(株)大阪フロント課');
+  });
+  it('U-car・サービスカンパニーは外す', () => {
+    expect(isExcludedClient('オリックス自動車(株) U-car神戸店')).toBe(true);
+    expect(isExcludedClient('ｵﾘｯｸｽ自動車(株) ｻｰﾋﾞｽｶﾝﾊﾟﾆｰ福岡支店')).toBe(true);
+    expect(isExcludedClient('オリックス自動車(株)大阪フロント課')).toBe(false);
+  });
+  it('NCS の2つのチームが1つの得意先になり、外した得意先は出てこない', () => {
+    const idx = buildLeaseReportIndex([
+      row({ leaseCompany: 'NCS', orderClient: '日本カーソリューションズ(株) 西日本サービス部広島チーム', year: 2025, month: 5, quantity: 2 }),
+      row({ leaseCompany: 'NCS', orderClient: '日本カーソリューションズ(株) サービスサポート部広島エリアチーム', year: 2025, month: 6, quantity: 3 }),
+      row({ orderClient: 'オリックス自動車(株) U-car神戸店', year: 2025, month: 5 }),
+    ]);
+    expect(listClients(idx, 'NCS')).toEqual([{ name: '広島チーム', qty: 5 }]);
+    expect(listClients(idx, 'OR')).toEqual([]);
+  });
+});
+
+describe('よく出る車種', () => {
+  it('車種はメーカー＋型式のハイフン前', () => {
+    expect(carKeyOf({ carName: 'ｲｽｽﾞ', carType: 'npr88-7001234' })).toBe('イスズ NPR88');
+    expect(carKeyOf({ carName: 'ﾄﾖﾀ', carType: '' })).toBe('トヨタ (型式なし)');
+    expect(carKeyOf({})).toBe('(不明)');
+  });
+  it('品目ごとに本数の多い順、前年は途中の年度なら同期間', () => {
+    const idx = buildLeaseReportIndex([
+      row({ year: 2026, month: 4, carName: 'ｲｽｽﾞ', carType: 'NPR88-1', quantity: 3 }),
+      row({ year: 2026, month: 4, carName: 'ｽｽﾞｷ', carType: 'DA17V-1', quantity: 5 }),
+      row({ year: 2025, month: 4, carName: 'ｲｽｽﾞ', carType: 'NPR88-2', quantity: 2 }),
+      row({ year: 2025, month: 9, carName: 'ｲｽｽﾞ', carType: 'NPR88-3', quantity: 9 }), // 同期間外
+      row({ year: 2026, month: 4, item: 'ｽﾀｰﾀｰ', carName: 'ﾋﾉ', carType: 'XZU605-1', quantity: 1 }),
+    ]);
+    const s = summarizeCars(idx, 'OR', null, 2026);
+    expect(s.years).toEqual([2025, 2026]);
+    expect(s.items.get('オルタネーター').rows).toEqual([
+      { car: 'スズキ DA17V', qty: 5, prev: 0 },
+      { car: 'イスズ NPR88', qty: 3, prev: 2 },
+    ]);
+    expect(s.items.get('オルタネーター').total).toBe(8);
+    expect(s.items.get('スターター').rows[0].car).toBe('ヒノ XZU605');
+    expect(summarizeCars(idx, 'OR', null, 2025).items.get('オルタネーター').rows[0]).toEqual({ car: 'イスズ NPR88', qty: 11, prev: 0 });
   });
 });
 
@@ -91,5 +140,6 @@ describe('parseCsv', () => {
     expect(rows.length).toBe(2);
     expect(rows[0].itemMid).toBe('MAX');
     expect(rows[1]).toMatchObject({ year: 2026, month: 3, fiscalYear: 2025 });
+    expect(rows[0]).toMatchObject({ carName: 'ｲｽｽﾞ', carType: 'X' });
   });
 });

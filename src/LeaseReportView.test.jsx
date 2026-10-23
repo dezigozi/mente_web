@@ -74,4 +74,22 @@ describe('LeaseReportView', () => {
     expect(last.querySelector('tr').textContent).toContain('16');
     expect(within(last).getByText('コンプレッサー')).toBeTruthy();
   });
+
+  it('タブ名は「支店別実績」。よく出る車種タブで品目ごとのランキングと年度切替', () => {
+    const carRows = [
+      row({ year: 2025, month: 5, carName: 'ｲｽｽﾞ', carType: 'NPR88-1', quantity: 3 }),
+      row({ year: 2025, month: 5, carName: 'ｽｽﾞｷ', carType: 'DA17V-1', quantity: 5 }),
+      row({ year: 2024, month: 5, carName: 'ﾄﾖﾀ', carType: 'TRH200-1', quantity: 2 }),
+    ];
+    render(<LeaseReportView rows={carRows} />);
+    expect(screen.getByRole('button', { name: '支店別実績' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'よく出る車種' }));
+    const tables = screen.getAllByRole('table');
+    expect(tables.length).toBe(3);
+    const names = within(tables[0]).getAllByRole('row').slice(1).map(r => r.textContent);
+    expect(names[0]).toContain('スズキ DA17V');
+    expect(names[1]).toContain('イスズ NPR88');
+    fireEvent.click(screen.getByRole('button', { name: '2024年度' }));
+    expect(within(screen.getAllByRole('table')[0]).getByText('トヨタ TRH200')).toBeTruthy();
+  });
 });
