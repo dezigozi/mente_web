@@ -1361,6 +1361,7 @@ const App = () => {
 const LEASE_REPORT_ITEM_LABEL = { 'オルタネーター': 'オルタ', 'スターター': 'スターター', 'コンプレッサー': 'コンプレッサー' };
 const LEASE_REPORT_LEASE_NAME = { OR: 'オリックス自動車' };
 const LEASE_REPORT_RENDER_STEP = 200;
+const LEASE_REPORT_FILE_NAME = { factory: '工場別レポート', client: '支店別レポート', car: '車種別レポート' };
 /** よく出る車種の初期表示（A4横1枚に収まる数）。残りは「その他」にまとめる */
 const LEASE_REPORT_CAR_TOP = 22;
 const LEASE_REPORT_TAB_TITLE = {
@@ -1532,8 +1533,15 @@ const LeaseReportView = memo(({ rows }) => {
     ncsDownload(new Blob(['﻿' + out.join('\r\n')], { type: 'text/csv;charset=utf-8' }), `${lease}_${kind}.csv`);
   };
 
+  /** PDF の保存名は document.title になるので、印刷の間だけ「工場別レポート_20261023」にする */
   const handlePrint = () => {
     flushSync(() => setRenderLimit(Infinity));
+    const d = new Date();
+    const ymd = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
+    const prevTitle = document.title;
+    document.title = `${LEASE_REPORT_FILE_NAME[tab]}_${ymd}`;
+    const restore = () => { document.title = prevTitle; window.removeEventListener('afterprint', restore); };
+    window.addEventListener('afterprint', restore);
     window.print();
   };
 
