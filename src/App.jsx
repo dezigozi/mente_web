@@ -1368,7 +1368,6 @@ const LEASE_REPORT_TAB_TITLE = {
   client: '支店別実績（オルタ・スターター・コンプレッサー）',
   car: 'よく出る車種（オルタ・スターター・コンプレッサー）',
 };
-const leaseReportLabel = l => (LEASE_REPORT_LEASE_NAME[l] ? `${l}（${LEASE_REPORT_LEASE_NAME[l]}）` : l);
 /** 提出用の印刷（工場別・支店別）：ブラウザのヘッダー/フッターを消すため余白0、余白は各ページに中で付ける */
 const LEASE_REPORT_PRINT_TITLE = { factory: '工場別ご実績', client: '支店別ご実績' };
 const LEASE_REPORT_CAR_PRINT_CSS = `@media print {
@@ -1589,7 +1588,7 @@ const LeaseReportView = memo(({ rows }) => {
           <span className="text-xs font-black text-slate-500">リース会社</span>
           <select value={lease} onChange={e => changeLease(e.target.value)}
             className="px-4 py-2.5 rounded-2xl border border-slate-200 bg-white text-sm font-black text-slate-700 focus:outline-none focus:ring-2 focus:ring-emerald-300">
-            {leaseOptions.map(l => <option key={l} value={l}>{leaseReportLabel(l)}</option>)}
+            {leaseOptions.map(l => <option key={l} value={l}>{l}</option>)}
           </select>
           {tab === 'factory' && (
             <input value={query} onChange={e => { setQuery(e.target.value); setRenderLimit(LEASE_REPORT_RENDER_STEP); }}
@@ -1615,7 +1614,7 @@ const LeaseReportView = memo(({ rows }) => {
         {tab === 'car' && <style>{LEASE_REPORT_CAR_PRINT_CSS}</style>}
         {printTitle && <h1 className="hidden print:block mb-4 text-xl font-black text-slate-900">{printTitle}</h1>}
         <div className={`mb-3 font-black text-slate-800 ${printTitle ? 'print:hidden' : ''}`}>
-          {leaseReportLabel(lease)}　{LEASE_REPORT_TAB_TITLE[tab]}
+          {lease}　{LEASE_REPORT_TAB_TITLE[tab]}
           {tab === 'car' && <span className="ml-2 text-sm font-black text-emerald-700">{carFyLabel(carFy)}</span>}
           <span className="ml-2 text-xs font-bold text-slate-500">{scopeText}</span>
         </div>
