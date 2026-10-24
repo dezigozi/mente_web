@@ -105,32 +105,40 @@ export function splitFy(f, fy, compareSet) {
 }
 
 /**
+ * 電話番号・都道府県・住所/工場名キーワードの絞り込み
+ * @param {{ key:string, address?:string, pref?:string, tel?:string, phones?:Set<string> }} f 工場（phones と tel の両方で照合）
+ */
+export function factoryMatches(f, { phone, pref, keyword }) {
+  const dP = digits(phone);
+  if (dP) {
+    const phones = [...(f.phones || []), digits(f.tel)];
+    // 0始まり＝市外局番として前方一致（工場一覧の電話絞り込みと同じ）
+    if (!phones.some(p => p && (dP.startsWith('0') ? p.startsWith(dP) : p.includes(dP)))) return false;
+  }
+  const nPref = normText(pref);
+  if (nPref && !normText(f.pref).includes(nPref)) return false;
+  const nKw = normText(keyword).replace(/\s+/g, '');
+  if (nKw && !(normText(f.address) + normText(f.key)).replace(/\s+/g, '').includes(nKw)) return false;
+  return true;
+}
+
+/**
  * 工場の絞り込み＋ターゲット判定
  * @param {Map} factories buildFactoryIndex の factories
- * @param {{ judgeFY:number, compareLeases:Set<string>, phone:string, pref:string, keyword:string, onlyTargets:boolean }} opt
+ * @param {{ judgeFY:number, compareLeases:Set<string>, phone:string, pref:string, keyword:string, onlyTargets:boolean, minOther?:number }} opt
+ *   minOther = 判定年度の他社台数がこれ未満の工場は出さない（0・未指定＝絞らない）
  */
-export function buildNcsTargets(factories, { judgeFY, compareLeases, phone, pref, keyword, onlyTargets }) {
+export function buildNcsTargets(factories, { judgeFY, compareLeases, phone, pref, keyword, onlyTargets, minOther = 0 }) {
   const compareSet = compareLeases && compareLeases.size ? compareLeases : null;
-  const dP = digits(phone);
-  const nPref = normText(pref);
-  const nKw = normText(keyword).replace(/\s+/g, '');
   const out = [];
   factories.forEach(f => {
-    if (dP) {
-      let hit = false;
-      for (const p of f.phones) {
-        // 0始まり＝市外局番として前方一致（工場一覧の電話絞り込みと同じ）
-        if (dP.startsWith('0') ? p.startsWith(dP) : p.includes(dP)) { hit = true; break; }
-      }
-      if (!hit) return;
-    }
-    if (nPref && !normText(f.pref).includes(nPref)) return;
-    if (nKw && !(normText(f.address).replace(/\s+/g, '') + normText(f.key)).includes(nKw)) return;
+    if (!factoryMatches(f, { phone, pref, keyword })) return;
 
     const judge = splitFy(f, judgeFY, compareSet);
     const isTarget = judge.ncs <= 0 && judge.other > 0;
     if (onlyTargets && !isTarget) return;
     if (!onlyTargets && judge.ncs <= 0 && judge.other <= 0) return;
+    if (minOther > 0 && judge.other < minOther) return;
     out.push({ f, judge, isTarget });
   });
   out.sort((a, b) => b.judge.other - a.judge.other || a.f.key.localeCompare(b.f.key, 'ja'));
@@ -194,8 +202,49 @@ export function areaOf(address) {
   return m ? m[1] : '';
 }
 
+/** 住所 → 市まで（横浜市鶴見区 → 横浜市）。市が無ければ areaOf と同じ（東京23区・郡町村） */
+export function cityOf(address) {
+  const area = areaOf(address);
+  const m = area.match(/^(.{1,6}?市市?)/);
+  return m ? m[1] : area;
+}
+
 /** 'YYYY-MM-DD' 同士の日数差（b - a） */
 export function daysBetween(aNum, bNum) {
   const toDate = n => new Date(Math.floor(n / 10000), Math.floor(n / 100) % 100 - 1, n % 100);
   return Math.round((toDate(bNum) - toDate(aNum)) / 86400000);
+}
+
+/**
+ * 訪問日 → その日に訪問した工場をエリアごとに（カレンダー用）
+ * @param {{ date:string, factoryKey:string }[]} visits
+ * @param {(key:string) => string} areaOfKey
+ * @returns {Map<number, { area:string, keys:Set<string> }[]>} キーは 20261014 形式。エリアは工場の多い順
+ */
+export function visitAreasByDate(visits, areaOfKey) {
+  const byDate = new Map();
+  for (const v of visits) {
+    const d = dateNum(v.date);
+    if (!d) continue;
+    const area = areaOfKey(v.factoryKey) || '(エリア不明)';
+    if (!byDate.has(d)) byDate.set(d, new Map());
+    const m = byDate.get(d);
+    if (!m.has(area)) m.set(area, new Set());
+    m.get(area).add(v.factoryKey);
+  }
+  const out = new Map();
+  byDate.forEach((m, d) => out.set(d, [...m]
+    .map(([area, keys]) => ({ area, keys }))
+    .sort((a, b) => b.keys.size - a.keys.size || a.area.localeCompare(b.area, 'ja'))));
+  return out;
+}
+
+/**
+ * 工場の判定。訪問なし → 'none'
+ * @param {{ ncsWon:boolean, waiting:boolean, revisit:boolean } | null} st App の statusOf の戻り値
+ * @returns {'won'|'waiting'|'revisit'|'open'|'none'}
+ */
+export function ncsJudge(st) {
+  if (!st) return 'none';
+  return st.ncsWon ? 'won' : st.waiting ? 'waiting' : st.revisit ? 'revisit' : 'open';
 }
