@@ -4742,15 +4742,15 @@ const NcsWorkTab = ({ index, judgeFY, pool, visitsByFactory, statusOf, onSaveVis
             <tr>
               <th className={`${th} w-10 text-center`}>選択</th>
               <th className={`${th} text-center`}>判定</th>
-              <th className={`${th} text-left`}>エリア</th>
-              <th className={`${th} text-left`}>工場名</th>
-              <th className={`${th} text-right bg-green-800`} title={`${judgeFY}/10〜${judgeFY + 1}/9`}>NCS<div className="text-[9px] font-bold text-green-300">{judgeFY}年度</div></th>
-              <th className={`${th} text-right bg-green-800`} title={`${judgeFY}/10〜${judgeFY + 1}/9`}>他社<div className="text-[9px] font-bold text-green-300">{judgeFY}年度</div></th>
-              <th className={`${th} text-left`}>最終訪問</th>
-              <th className={`${th} text-right`}>経過</th>
-              <th className={`${th} text-right`}>訪問後 NCS</th>
-              <th className={`${th} text-right`}>訪問後 全体</th>
-              <th className={th}></th>
+              <th className={`${th} text-center`}>エリア</th>
+              <th className={`${th} text-center`}>工場名</th>
+              <th className={`${th} text-center bg-green-800`} title={`${judgeFY}/10〜${judgeFY + 1}/9`}>NCS<div className="text-[9px] font-bold text-green-300">{judgeFY}年度</div></th>
+              <th className={`${th} text-center bg-green-800`} title={`${judgeFY}/10〜${judgeFY + 1}/9`}>他社<div className="text-[9px] font-bold text-green-300">{judgeFY}年度</div></th>
+              <th className={`${th} text-center`}>最終訪問</th>
+              <th className={`${th} text-center`}>経過</th>
+              <th className={`${th} text-center`}>訪問後 NCS</th>
+              <th className={`${th} text-center`}>訪問後 全体</th>
+              <th className={`${th} text-center`}></th>
             </tr>
           </thead>
           <tbody>
