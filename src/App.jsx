@@ -3802,8 +3802,18 @@ const NCS_RESULT_STYLE = {
   '様子見': 'bg-amber-100 text-amber-700 border-amber-200',
   '脈なし': 'bg-slate-200 text-slate-600 border-slate-300',
 };
-/** 最終訪問からこの日数を過ぎて NCS 未受注なら再訪問候補 */
+/** 最終訪問からこの日数を過ぎて NCS 未受注なら再訪問候補（既定値。画面で変えるとこのブラウザに保存） */
 const NCS_REVISIT_DAYS = 90;
+const NCS_REVISIT_LS_KEY = 'ncs_revisit_days_v1';
+const ncsLoadRevisitDays = () => {
+  try {
+    const n = Number(localStorage.getItem(NCS_REVISIT_LS_KEY));
+    return Number.isInteger(n) && n >= 1 ? n : NCS_REVISIT_DAYS;
+  } catch (e) {
+    console.warn('再訪問候補の日数を読めなかったので既定値にするよ', e);
+    return NCS_REVISIT_DAYS;
+  }
+};
 /** ターゲット一覧の表示上限（多いときは地域で絞る誘導） */
 const NCS_TARGET_CAP = 300;
 
@@ -3837,6 +3847,11 @@ const NcsVisitView = ({ rows, leaseCompanies }) => {
   const [judgeFY, setJudgeFY] = useState(defaultFY);
   useEffect(() => { if (!index.fiscalYears.includes(judgeFY)) setJudgeFY(defaultFY); }, [index, defaultFY, judgeFY]);
   const todayNum = dateNum(ncsTodayIso());
+  const [revisitDays, setRevisitDaysState] = useState(ncsLoadRevisitDays);
+  const setRevisitDays = useCallback((n) => {
+    setRevisitDaysState(n);
+    try { localStorage.setItem(NCS_REVISIT_LS_KEY, String(n)); } catch (e) { console.warn('再訪問候補の日数を保存できなかったよ', e); }
+  }, []);
 
   // ---- 保存データ（訪問リスト・訪問記録） ----
   const [mode, setMode] = useState(storeMode); // 'shared' | 'needKey' | 'local'
@@ -3952,9 +3967,9 @@ const NcsVisitView = ({ rows, leaseCompanies }) => {
     const waiting = index.lastDate <= since; // 訪問日より後の実績がまだCSVに無い
     const elapsed = lastNum ? daysBetween(lastNum, todayNum) : 0;
     const nextNum = dateNum(last.nextDate);
-    const revisit = !ncsWon && ((nextNum && nextNum <= todayNum) || elapsed >= NCS_REVISIT_DAYS);
+    const revisit = !ncsWon && ((nextNum && nextNum <= todayNum) || elapsed >= revisitDays);
     return { vs, first, last, stats, ncsWon, waiting, elapsed, nextNum, revisit };
-  }, [visitsByFactory, postStats, index.lastDate, todayNum]);
+  }, [visitsByFactory, postStats, index.lastDate, todayNum, revisitDays]);
 
   // ---- バックアップ ----
   const fileRef = useRef(null);
@@ -4057,7 +4072,7 @@ const NcsVisitView = ({ rows, leaseCompanies }) => {
                   </div>
                   <div>ほかのリース会社では受注があるのに NCS だけ無い工場を拾って、訪問と訪問後の受注を追うページ。</div>
                   <div>受注数＝オルタネーター・スターター・コンプレッサー・エアコン関連 / 年度は10月〜9月 / データ最終日 {fmtDateNum(index.lastDate)}</div>
-                  <div>訪問後の受注は初回訪問の翌日〜データ最終日。再訪問候補＝NCS未受注のまま最終訪問から{NCS_REVISIT_DAYS}日たった工場。</div>
+                  <div>訪問後の受注は初回訪問の翌日〜データ最終日。再訪問候補＝NCS未受注のまま最終訪問から{revisitDays}日たった工場（日数は訪問・成果タブで変えられる）。</div>
                 </div>
                 {mode === 'shared' && (
                   <button onClick={() => { setShowMenu(false); reload(); }} className="w-full flex items-center gap-2 px-4 py-3 text-xs font-black text-slate-700 hover:bg-emerald-50 hover:text-emerald-700 transition-colors border-t border-slate-100">
@@ -4093,6 +4108,7 @@ const NcsVisitView = ({ rows, leaseCompanies }) => {
       {tab === 'work' && (
         <NcsWorkTab
           index={index} judgeFY={judgeFY} pool={pool} visitsByFactory={visitsByFactory} statusOf={statusOf}
+          revisitDays={revisitDays} onChangeRevisitDays={setRevisitDays}
           onSaveVisit={saveVisitAndShow} onDeleteVisit={deleteVisitAndHide} onRemoveTarget={removeTarget}
         />
       )}
@@ -4550,11 +4566,19 @@ const NcsVisitModal = ({ row, visits, defaultDate, years, factory, onSave, onDel
 };
 
 /** タブ2: 訪問・成果（ターゲット＋訪問した工場を1枚で。ダブルクリックで訪問記録） */
-const NcsWorkTab = ({ index, judgeFY, pool, visitsByFactory, statusOf, onSaveVisit, onDeleteVisit, onRemoveTarget }) => {
+const NcsWorkTab = ({ index, judgeFY, pool, visitsByFactory, statusOf, revisitDays = NCS_REVISIT_DAYS, onChangeRevisitDays, onSaveVisit, onDeleteVisit, onRemoveTarget }) => {
   const [phone, setPhone] = useState('');
   const [pref, setPref] = useState('');
   const [keyword, setKeyword] = useState('');
   const [onlyRevisit, setOnlyRevisit] = useState(false);
+  const [onlyVisited, setOnlyVisited] = useState(false);
+  const [daysInput, setDaysInput] = useState(String(revisitDays)); // 入力途中（空など）を許すため文字で持つ
+  useEffect(() => { setDaysInput(String(revisitDays)); }, [revisitDays]);
+  const changeDays = v => {
+    setDaysInput(v);
+    const n = Number(v);
+    if (Number.isInteger(n) && n >= 1 && n !== revisitDays) onChangeRevisitDays?.(n);
+  };
   const [visitDate, setVisitDate] = useState(ncsTodayIso); // 新しく書く記録の訪問日
   const [showCal, setShowCal] = useState(false);
   const [focus, setFocus] = useState(null); // カレンダーで選んだ { date, area, keys }
@@ -4592,10 +4616,10 @@ const NcsWorkTab = ({ index, judgeFY, pool, visitsByFactory, statusOf, onSaveVis
   const shown = useMemo(() => {
     const hit = r => (focus?.keys.has(r.key) ? 0 : 1);
     return all
-      .filter(r => factoryMatches(r, { phone, pref, keyword }) && (!onlyRevisit || r.judge === 'revisit'))
+      .filter(r => factoryMatches(r, { phone, pref, keyword }) && (!onlyVisited || r.st) && (!onlyRevisit || r.judge === 'revisit'))
       .sort((a, b) => hit(a) - hit(b) || NCS_JUDGE_ORDER[a.judge] - NCS_JUDGE_ORDER[b.judge]
         || a.area.localeCompare(b.area, 'ja') || a.key.localeCompare(b.key, 'ja'));
-  }, [all, phone, pref, keyword, onlyRevisit, focus]);
+  }, [all, phone, pref, keyword, onlyVisited, onlyRevisit, focus]);
 
   const count = j => all.filter(r => r.judge === j).length;
   const cards = [
@@ -4715,8 +4739,19 @@ const NcsWorkTab = ({ index, judgeFY, pool, visitsByFactory, statusOf, onSaveVis
           className="px-3 py-1.5 rounded-xl text-xs font-black text-slate-500 border border-slate-200 hover:bg-slate-50 disabled:opacity-40">チェックを外す</button>
         <span className="text-xs font-black text-slate-500">チェック {checked.size}件</span>
         <label className="inline-flex items-center gap-2 text-xs font-black text-slate-600 cursor-pointer ml-2">
+          <input type="checkbox" checked={onlyVisited} onChange={e => setOnlyVisited(e.target.checked)} className="accent-emerald-600" />
+          訪問済みだけ
+        </label>
+        <label className="inline-flex items-center gap-2 text-xs font-black text-slate-600 cursor-pointer">
           <input type="checkbox" checked={onlyRevisit} onChange={e => setOnlyRevisit(e.target.checked)} className="accent-rose-500" />
           再訪問候補だけ
+        </label>
+        <label className="inline-flex items-center gap-1 text-xs font-bold text-slate-500">
+          （最終訪問から
+          <input type="number" min="1" inputMode="numeric" aria-label="再訪問候補の日数" value={daysInput}
+            onChange={e => changeDays(e.target.value)} onBlur={() => setDaysInput(String(revisitDays))}
+            className="w-16 px-2 py-1 rounded-lg border border-slate-200 bg-white text-xs font-black text-slate-700 text-right focus:outline-none focus:ring-2 focus:ring-rose-200" />
+          日以上・NCS未受注）
         </label>
         {focus && (
           <span className="inline-flex items-center gap-1 px-3 py-1.5 rounded-xl bg-amber-100 text-amber-800 text-xs font-black">
@@ -4785,7 +4820,7 @@ const NcsWorkTab = ({ index, judgeFY, pool, visitsByFactory, statusOf, onSaveVis
                       </>
                     ) : <span className="text-slate-300 font-bold">未訪問</span>}
                   </td>
-                  <td className={`px-2 py-2 text-right text-xs font-black whitespace-nowrap ${st?.elapsed >= NCS_REVISIT_DAYS ? 'text-rose-600' : 'text-slate-600'}`}>{st ? `${st.elapsed}日` : ''}</td>
+                  <td className={`px-2 py-2 text-right text-xs font-black whitespace-nowrap ${st?.elapsed >= revisitDays ? 'text-rose-600' : 'text-slate-600'}`}>{st ? `${st.elapsed}日` : ''}</td>
                   <td className="px-2 py-2 text-right whitespace-nowrap">
                     {st && <div className={`text-xs font-black ${s?.ncsQty > 0 ? 'text-emerald-600' : 'text-slate-300'}`}>{s?.ncsQty || 0}件</div>}
                     {s?.ncsQty > 0 && <div className="text-[10px] text-slate-500 font-bold">¥{Math.round(s.ncsSales).toLocaleString()} / 初 {fmtDateNum(s.ncsFirst)}</div>}
@@ -4810,7 +4845,8 @@ const NcsWorkTab = ({ index, judgeFY, pool, visitsByFactory, statusOf, onSaveVis
             })}
             {!shown.length && (
               <tr><td colSpan={11} className="px-3 py-10 text-center text-slate-400 font-bold">
-                {onlyRevisit && !phone && !pref && !keyword ? '再訪問候補はいまないよ' : '条件に合う工場がないよ'}
+                {onlyRevisit && !phone && !pref && !keyword ? '再訪問候補はいまないよ'
+                  : onlyVisited && !phone && !pref && !keyword ? 'まだ訪問記録がないよ' : '条件に合う工場がないよ'}
               </td></tr>
             )}
           </tbody>

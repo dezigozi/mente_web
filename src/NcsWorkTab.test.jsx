@@ -46,6 +46,27 @@ describe('NcsWorkTab', () => {
     expect([cells[4].textContent, cells[5].textContent]).toEqual(['3', '146']);
   });
 
+  it('訪問済みだけ', () => {
+    setup();
+    fireEvent.click(screen.getByLabelText('訪問済みだけ'));
+    expect(factoryNames()).toEqual(['浅井自動車工業']);
+  });
+
+  it('再訪問候補の日数を変えられる（経過日数の赤も追従）', () => {
+    const onChangeRevisitDays = vi.fn();
+    const { rerender } = setup({ onChangeRevisitDays });
+    const input = screen.getByLabelText('再訪問候補の日数');
+    expect(input.value).toBe('90');
+    fireEvent.change(input, { target: { value: '' } });
+    expect(onChangeRevisitDays).not.toHaveBeenCalled();
+    fireEvent.change(input, { target: { value: '7' } });
+    expect(onChangeRevisitDays).toHaveBeenCalledWith(7);
+    expect(screen.getByText('10日').className).not.toContain('text-rose-600');
+    rerender(<NcsWorkTab index={index} judgeFY={2025} pool={pool} visitsByFactory={visitsByFactory} statusOf={statusOf}
+      revisitDays={7} onChangeRevisitDays={onChangeRevisitDays} onSaveVisit={vi.fn()} onDeleteVisit={vi.fn()} onRemoveTarget={vi.fn()} />);
+    expect(screen.getByText('10日').className).toContain('text-rose-600');
+  });
+
   it('電話・都道府県で絞り込める', () => {
     setup();
     fireEvent.change(screen.getByPlaceholderText('022'), { target: { value: '011' } });
