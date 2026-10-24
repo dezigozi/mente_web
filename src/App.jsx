@@ -85,7 +85,8 @@ function maxFiscalYearFromRows(rows) {
   return maxFY === -Infinity ? undefined : maxFY;
 }
 
-const ALLOWED_ITEMS = ['オルタネーター', 'スターター', 'コンプレッサー', 'エアコン関連'];
+/** 対象の分析名(大)。エアコン関連は出さない（2026-10-24 たかたか指示） */
+const ALLOWED_ITEMS = ['オルタネーター', 'スターター', 'コンプレッサー'];
 // NFKC正規化：半角カナ→全角カナ、全角英数→半角英数 に統一して比較
 const norm = s => (s || '').normalize('NFKC').trim();
 
@@ -292,7 +293,7 @@ const App = () => {
 
   /** メンテ(リース)複数。空＝全件 */
   const [selectedLeases, setSelectedLeases] = useState([]);
-  /** 分類（分析名(大)）ALLOWED_ITEMS からの複数。空＝4分類すべて（パターンAのUIのみ。パイプラインはA/B共通で適用） */
+  /** 分類（分析名(大)）ALLOWED_ITEMS からの複数。空＝3分類すべて（パターンAのUIのみ。パイプラインはA/B共通で適用） */
   const [selectedItemCategories, setSelectedItemCategories] = useState([]);
   /** 得意先名(列E)複数。空＝全件 */
   const [selectedOrderClients, setSelectedOrderClients] = useState([]);
@@ -396,7 +397,7 @@ const App = () => {
     });
   }, [rowsWithFiscalByStartMonth, selectedLeases, selectedOrderClients]);
 
-  // ダッシュ用：分析名(大)白／ALLOWED_ITEMS 相当のみ。分類の複数選択は空＝4分類すべて
+  // ダッシュ用：分析名(大)白／ALLOWED_ITEMS 相当のみ。分類の複数選択は空＝3分類すべて
   const dashboardRows = useMemo(
     () => {
       const itemNormSet = selectedItemCategories.length
@@ -4071,7 +4072,7 @@ const NcsVisitView = ({ rows, leaseCompanies }) => {
                     保存先：{mode === 'local' ? 'このブラウザだけ' : 'スプレッドシート（特販部_営業訪問ログ）で共有'}
                   </div>
                   <div>ほかのリース会社では受注があるのに NCS だけ無い工場を拾って、訪問と訪問後の受注を追うページ。</div>
-                  <div>受注数＝オルタネーター・スターター・コンプレッサー・エアコン関連 / 年度は10月〜9月 / データ最終日 {fmtDateNum(index.lastDate)}</div>
+                  <div>受注数＝オルタネーター・スターター・コンプレッサー / 年度は10月〜9月 / データ最終日 {fmtDateNum(index.lastDate)}</div>
                   <div>訪問後の受注は初回訪問の翌日〜データ最終日。再訪問候補＝NCS未受注のまま最終訪問から{revisitDays}日たった工場（日数は訪問・成果タブで変えられる）。</div>
                 </div>
                 {mode === 'shared' && (
