@@ -18,7 +18,8 @@ NCS訪問管理の「訪問リスト・記録」と「成果チェック」を1�
   - 新しい記録は `listId: ''`
 - 純関数を `utils/ncsTarget.js` に追加：`factoryMatches`（buildNcsTargets と共用）／`visitAreasByDate`／`ncsJudge`
 - ターゲット抽出に「判定年度の他社 ◯台以上」の絞り込み（`minOther`）。同じく merge 済み
-- テスト35本・build 通過。dev（localhost:5175）起動済み
+- 追加（merge 済み 60497c3）：表の見出しを真ん中寄せ／「訪問済みだけ」チェック／再訪問候補の日数を画面で変更（既定90日。localStorage `ncs_revisit_days_v1` でブラウザごと。全員でそろえるなら共有保存に要変更）
+- テスト37本・build 通過。dev（localhost:5175）起動済み
 
 ## 次にやること
 - Vercel 本番（menteweb-eta.vercel.app）で訪問・成果タブの表示と記録の保存を確認
