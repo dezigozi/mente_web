@@ -3806,6 +3806,14 @@ const NCS_RESULT_STYLE = {
 /** 最終訪問からこの日数を過ぎて NCS 未受注なら再訪問候補（既定値。画面で変えるとこのブラウザに保存） */
 const NCS_REVISIT_DAYS = 90;
 const NCS_REVISIT_LS_KEY = 'ncs_revisit_days_v1';
+/** ターゲット抽出の基準「判定年度の他社 ◯台以上」（このブラウザに保存） */
+const NCS_MIN_OTHER_LS_KEY = 'ncs_min_other_v1';
+const ncsLsGet = (key) => {
+  try { return localStorage.getItem(key) ?? ''; } catch (e) { console.warn(`${key} を読めなかったよ`, e); return ''; }
+};
+const ncsLsSet = (key, v) => {
+  try { localStorage.setItem(key, v); } catch (e) { console.warn(`${key} を保存できなかったよ`, e); }
+};
 const ncsLoadRevisitDays = () => {
   try {
     const n = Number(localStorage.getItem(NCS_REVISIT_LS_KEY));
@@ -3925,7 +3933,10 @@ const NcsVisitView = ({ rows, leaseCompanies }) => {
     const have = new Set(cur.map(x => x.key));
     return [...cur, ...entries.filter(x => !have.has(x.key))];
   }), [updatePool]);
-  const removeTarget = useCallback((key) => updatePool(cur => cur.filter(x => x.key !== key)), [updatePool]);
+  const removeTargets = useCallback((keys) => {
+    const drop = new Set(keys);
+    return updatePool(cur => cur.filter(x => !drop.has(x.key)));
+  }, [updatePool]);
 
   /** 保存・削除した記録を手元にも反映（共有だと全件読み直しが遅いので） */
   const onVisitSaved = useCallback((v) => {
@@ -4110,7 +4121,7 @@ const NcsVisitView = ({ rows, leaseCompanies }) => {
         <NcsWorkTab
           index={index} judgeFY={judgeFY} pool={pool} visitsByFactory={visitsByFactory} statusOf={statusOf}
           revisitDays={revisitDays} onChangeRevisitDays={setRevisitDays}
-          onSaveVisit={saveVisitAndShow} onDeleteVisit={deleteVisitAndHide} onRemoveTarget={removeTarget}
+          onSaveVisit={saveVisitAndShow} onDeleteVisit={deleteVisitAndHide} onRemoveTargets={removeTargets}
         />
       )}
     </div>
@@ -4127,7 +4138,8 @@ const NcsTargetTab = ({ index, leaseCompanies, judgeFY, setJudgeFY, poolKeys, vi
   const [pref, setPref] = useState('');
   const [keyword, setKeyword] = useState('');
   const [onlyTargets, setOnlyTargets] = useState(true);
-  const [minOther, setMinOther] = useState(''); // 判定年度の他社 ◯台以上（空＝絞らない）
+  const [minOther, setMinOtherState] = useState(() => ncsLsGet(NCS_MIN_OTHER_LS_KEY)); // 判定年度の他社 ◯台以上（空＝絞らない）
+  const setMinOther = v => { setMinOtherState(v); ncsLsSet(NCS_MIN_OTHER_LS_KEY, v); };
   const [checked, setChecked] = useState(new Set());
   const [adding, setAdding] = useState(false);
   const [notice, setNotice] = useState('');
@@ -4137,6 +4149,8 @@ const NcsTargetTab = ({ index, leaseCompanies, judgeFY, setJudgeFY, poolKeys, vi
     [index, judgeFY, compareLeases, phone, pref, keyword, onlyTargets, minOther]
   );
   const shown = useMemo(() => targets.slice(0, NCS_TARGET_CAP), [targets]);
+  /** 絞り込み後の全工場（表示上限より先も含む）の判定年度 他社台数 */
+  const otherTotal = useMemo(() => targets.reduce((t, x) => t + x.judge.other, 0), [targets]);
   const shownYears = useMemo(() => index.fiscalYears.filter(fy => fy <= judgeFY).slice(-4), [index, judgeFY]);
   const compareSet = compareLeases.size ? compareLeases : null;
   const otherLeases = useMemo(() => leaseCompanies.filter(l => l !== NCS && l !== '(未分類)'), [leaseCompanies]);
@@ -4234,7 +4248,7 @@ const NcsTargetTab = ({ index, leaseCompanies, judgeFY, setJudgeFY, poolKeys, vi
           {judgeFY}年度の他社
           <input type="number" min="0" inputMode="numeric" value={minOther} onChange={e => setMinOther(e.target.value)}
             placeholder="0" className="w-24 px-3 py-1.5 rounded-xl border border-slate-200 bg-white text-sm font-bold text-slate-700 text-right focus:outline-none focus:ring-2 focus:ring-emerald-300" />
-          台以上 <span className="text-slate-400 font-bold">— 空＝絞らない</span>
+          台以上 <span className="text-slate-400 font-bold">— 基準としてこのブラウザに保存。空＝絞らない</span>
         </label>
         <label className="inline-flex items-center gap-2 text-xs font-black text-slate-600 cursor-pointer">
           <input type="checkbox" checked={onlyTargets} onChange={e => setOnlyTargets(e.target.checked)} className="accent-emerald-600" />
@@ -4246,6 +4260,7 @@ const NcsTargetTab = ({ index, leaseCompanies, judgeFY, setJudgeFY, poolKeys, vi
       <div className="flex flex-wrap items-center gap-2 no-print">
         <div className="text-sm font-black text-slate-700 mr-2">
           {onlyTargets ? '対象' : '該当'} {targets.length.toLocaleString()} 工場
+          <span className="ml-3 text-emerald-700">他社 {judgeFY}年度 合計 {otherTotal.toLocaleString()} 台</span>
           {targets.length > NCS_TARGET_CAP && <span className="text-xs text-amber-600 ml-2">（先頭{NCS_TARGET_CAP}件を表示。地域で絞ってね）</span>}
         </div>
         <button onClick={() => setChecked(prev => new Set([...prev, ...shown.filter(x => x.isTarget).map(x => x.f.key)]))}
@@ -4567,12 +4582,12 @@ const NcsVisitModal = ({ row, visits, defaultDate, years, factory, onSave, onDel
 };
 
 /** タブ2: 訪問・成果（ターゲット＋訪問した工場を1枚で。ダブルクリックで訪問記録） */
-const NcsWorkTab = ({ index, judgeFY, pool, visitsByFactory, statusOf, revisitDays = NCS_REVISIT_DAYS, onChangeRevisitDays, onSaveVisit, onDeleteVisit, onRemoveTarget }) => {
+const NcsWorkTab = ({ index, judgeFY, pool, visitsByFactory, statusOf, revisitDays = NCS_REVISIT_DAYS, onChangeRevisitDays, onSaveVisit, onDeleteVisit, onRemoveTargets }) => {
   const [phone, setPhone] = useState('');
   const [pref, setPref] = useState('');
   const [keyword, setKeyword] = useState('');
   const [onlyRevisit, setOnlyRevisit] = useState(false);
-  const [onlyVisited, setOnlyVisited] = useState(false);
+  const [visitFilter, setVisitFilter] = useState('all'); // 'all' | 'visited' | 'unvisited'
   const [daysInput, setDaysInput] = useState(String(revisitDays)); // 入力途中（空など）を許すため文字で持つ
   useEffect(() => { setDaysInput(String(revisitDays)); }, [revisitDays]);
   const changeDays = v => {
@@ -4617,10 +4632,10 @@ const NcsWorkTab = ({ index, judgeFY, pool, visitsByFactory, statusOf, revisitDa
   const shown = useMemo(() => {
     const hit = r => (focus?.keys.has(r.key) ? 0 : 1);
     return all
-      .filter(r => factoryMatches(r, { phone, pref, keyword }) && (!onlyVisited || r.st) && (!onlyRevisit || r.judge === 'revisit'))
+      .filter(r => factoryMatches(r, { phone, pref, keyword }) && (visitFilter === 'all' || (visitFilter === 'visited') === !!r.st) && (!onlyRevisit || r.judge === 'revisit'))
       .sort((a, b) => hit(a) - hit(b) || NCS_JUDGE_ORDER[a.judge] - NCS_JUDGE_ORDER[b.judge]
         || a.area.localeCompare(b.area, 'ja') || a.key.localeCompare(b.key, 'ja'));
-  }, [all, phone, pref, keyword, onlyVisited, onlyRevisit, focus]);
+  }, [all, phone, pref, keyword, visitFilter, onlyRevisit, focus]);
 
   const count = j => all.filter(r => r.judge === j).length;
   const cards = [
@@ -4649,8 +4664,21 @@ const NcsWorkTab = ({ index, judgeFY, pool, visitsByFactory, statusOf, revisitDa
   const handleRemove = async (r) => {
     if (!window.confirm(`「${r.key}」をターゲットから外す？（訪問記録はそのまま）`)) return;
     try {
-      await onRemoveTarget(r.key);
+      await onRemoveTargets([r.key]);
       setChecked(prev => { const n = new Set(prev); n.delete(r.key); return n; });
+    } catch (e) {
+      alert(`外せなかったよ: ${e?.message || e}`);
+    }
+  };
+  /** チェックした工場のうちターゲットに入っているものをまとめて外す */
+  const checkedInPool = all.filter(r => r.inPool && checked.has(r.key));
+  const handleRemoveChecked = async () => {
+    const keys = checkedInPool.map(r => r.key);
+    if (!keys.length) return;
+    if (!window.confirm(`チェックした ${keys.length}件 をターゲットから外す？（訪問記録はそのまま）`)) return;
+    try {
+      await onRemoveTargets(keys);
+      setChecked(new Set());
     } catch (e) {
       alert(`外せなかったよ: ${e?.message || e}`);
     }
@@ -4739,10 +4767,12 @@ const NcsWorkTab = ({ index, judgeFY, pool, visitsByFactory, statusOf, revisitDa
         <button onClick={() => setChecked(new Set())} disabled={!checked.size}
           className="px-3 py-1.5 rounded-xl text-xs font-black text-slate-500 border border-slate-200 hover:bg-slate-50 disabled:opacity-40">チェックを外す</button>
         <span className="text-xs font-black text-slate-500">チェック {checked.size}件</span>
-        <label className="inline-flex items-center gap-2 text-xs font-black text-slate-600 cursor-pointer ml-2">
-          <input type="checkbox" checked={onlyVisited} onChange={e => setOnlyVisited(e.target.checked)} className="accent-emerald-600" />
-          訪問済みだけ
-        </label>
+        <div className="inline-flex gap-0.5 bg-slate-100 p-0.5 rounded-xl ml-2">
+          {[['all', 'すべて'], ['visited', '訪問済み'], ['unvisited', '未訪問']].map(([k, label]) => (
+            <button key={k} onClick={() => setVisitFilter(k)} aria-pressed={visitFilter === k}
+              className={`px-3 py-1 rounded-lg text-xs font-black ${visitFilter === k ? 'bg-white text-emerald-700 shadow' : 'text-slate-500 hover:text-slate-700'}`}>{label}</button>
+          ))}
+        </div>
         <label className="inline-flex items-center gap-2 text-xs font-black text-slate-600 cursor-pointer">
           <input type="checkbox" checked={onlyRevisit} onChange={e => setOnlyRevisit(e.target.checked)} className="accent-rose-500" />
           再訪問候補だけ
@@ -4761,6 +4791,10 @@ const NcsWorkTab = ({ index, judgeFY, pool, visitsByFactory, statusOf, revisitDa
           </span>
         )}
         <div className="ml-auto flex flex-wrap gap-2">
+          <button onClick={handleRemoveChecked} disabled={!checkedInPool.length}
+            className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-black text-rose-500 border border-rose-200 hover:bg-rose-50 disabled:opacity-40">
+            <Trash2 size={14} /> チェックした{checkedInPool.length}件を外す
+          </button>
           <button onClick={handleRouteExport} disabled={!checked.size}
             className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-black border border-green-900 text-green-900 hover:bg-green-50 disabled:opacity-40">
             <FileSpreadsheet size={14} /> ルート計画書Excel
@@ -4847,7 +4881,7 @@ const NcsWorkTab = ({ index, judgeFY, pool, visitsByFactory, statusOf, revisitDa
             {!shown.length && (
               <tr><td colSpan={11} className="px-3 py-10 text-center text-slate-400 font-bold">
                 {onlyRevisit && !phone && !pref && !keyword ? '再訪問候補はいまないよ'
-                  : onlyVisited && !phone && !pref && !keyword ? 'まだ訪問記録がないよ' : '条件に合う工場がないよ'}
+                  : visitFilter === 'visited' && !phone && !pref && !keyword ? 'まだ訪問記録がないよ' : '条件に合う工場がないよ'}
               </td></tr>
             )}
           </tbody>
