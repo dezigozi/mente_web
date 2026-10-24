@@ -19,11 +19,14 @@ NCS訪問管理の「訪問リスト・記録」と「成果チェック」を1�
 - 純関数を `utils/ncsTarget.js` に追加：`factoryMatches`（buildNcsTargets と共用）／`visitAreasByDate`／`ncsJudge`
 - ターゲット抽出に「判定年度の他社 ◯台以上」の絞り込み（`minOther`）。同じく merge 済み
 - 追加（merge 済み 60497c3）：表の見出しを真ん中寄せ／「訪問済みだけ」チェック／再訪問候補の日数を画面で変更（既定90日。localStorage `ncs_revisit_days_v1` でブラウザごと。全員でそろえるなら共有保存に要変更）
-- テスト37本・build 通過。dev（localhost:5175）起動済み
+- テスト38本・build 通過。dev（localhost:5175）起動済み
 
 - エアコン関連をアプリ全体から外した（`ALLOWED_ITEMS` を オルタ・スタ・コンプの3分類に）。master に merge・push 済み
 
+- 追加：ターゲット抽出に「他社 ◯年度 合計 ◯台」／他社◯台以上を基準として localStorage `ncs_min_other_v1` に保存／訪問・成果に「すべて・訪問済み・未訪問」切替と「チェックした◯件を外す」（一括でターゲットから外す）。master に merge・push 済み
+
 ## 次にやること
+- たかたか：訪問・成果で「未訪問 → 表示中を全部チェック → チェックした◯件を外す」でターゲットをやり直し（エアコン込みで選んでいたため）。他社◯台以上の基準を決める
 - Vercel 本番（menteweb-eta.vercel.app）で訪問・成果タブの表示と記録の保存を確認
 - NCS訪問管理：本番で共有キーを入れて、保存・記録が実シートに入るか確認
 - 共有キーを営業のみんなに伝える

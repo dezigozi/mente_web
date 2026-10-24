@@ -26,7 +26,7 @@ const index = {
 };
 const setup = (props = {}) => render(
   <NcsWorkTab index={index} judgeFY={2025} pool={pool} visitsByFactory={visitsByFactory} statusOf={statusOf}
-    onSaveVisit={vi.fn(async () => {})} onDeleteVisit={vi.fn()} onRemoveTarget={vi.fn()} {...props} />
+    onSaveVisit={vi.fn(async () => {})} onDeleteVisit={vi.fn()} onRemoveTargets={vi.fn()} {...props} />
 );
 const factoryNames = () => screen.getAllByRole('row').slice(1).map(r => r.querySelector('td:nth-child(4) div')?.textContent);
 
@@ -46,10 +46,16 @@ describe('NcsWorkTab', () => {
     expect([cells[4].textContent, cells[5].textContent]).toEqual(['3', '146']);
   });
 
-  it('訪問済みだけ', () => {
+  it('訪問済み／未訪問で絞る（未訪問→全部チェックでまとめて外せる）', () => {
     setup();
-    fireEvent.click(screen.getByLabelText('訪問済みだけ'));
+    fireEvent.click(screen.getByRole('button', { name: '訪問済み' }));
     expect(factoryNames()).toEqual(['浅井自動車工業']);
+    fireEvent.click(screen.getByRole('button', { name: '未訪問' }));
+    expect(factoryNames().sort()).toEqual(['平和車輌工場', '滝川自工'].sort());
+    fireEvent.click(screen.getByRole('button', { name: '表示中を全部チェック' }));
+    expect(screen.getByRole('button', { name: /^チェックした\d+件を外す$/ }).textContent).toContain('2件');
+    fireEvent.click(screen.getByRole('button', { name: 'すべて' }));
+    expect(factoryNames()).toHaveLength(3);
   });
 
   it('再訪問候補の日数を変えられる（経過日数の赤も追従）', () => {
@@ -63,8 +69,26 @@ describe('NcsWorkTab', () => {
     expect(onChangeRevisitDays).toHaveBeenCalledWith(7);
     expect(screen.getByText('10日').className).not.toContain('text-rose-600');
     rerender(<NcsWorkTab index={index} judgeFY={2025} pool={pool} visitsByFactory={visitsByFactory} statusOf={statusOf}
-      revisitDays={7} onChangeRevisitDays={onChangeRevisitDays} onSaveVisit={vi.fn()} onDeleteVisit={vi.fn()} onRemoveTarget={vi.fn()} />);
+      revisitDays={7} onChangeRevisitDays={onChangeRevisitDays} onSaveVisit={vi.fn()} onDeleteVisit={vi.fn()} onRemoveTargets={vi.fn()} />);
     expect(screen.getByText('10日').className).toContain('text-rose-600');
+  });
+
+  it('チェックした工場をまとめてターゲットから外す', async () => {
+    const onRemoveTargets = vi.fn(async () => {});
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    setup({ onRemoveTargets });
+    const btn = () => screen.getByRole('button', { name: /^チェックした\d+件を外す$/ });
+    expect(btn().disabled).toBe(true);
+    for (const name of ['滝川自工', '平和車輌工場']) {
+      fireEvent.click(screen.getByText(name).closest('tr').querySelector('td'));
+    }
+    expect(btn().textContent).toContain('チェックした2件を外す');
+    fireEvent.click(btn());
+    expect(confirm).toHaveBeenCalled();
+    await vi.waitFor(() => expect(onRemoveTargets).toHaveBeenCalledTimes(1));
+    expect(onRemoveTargets.mock.calls[0][0].sort()).toEqual(['平和車輌工場', '滝川自工'].sort());
+    await vi.waitFor(() => expect(btn().textContent).toContain('チェックした0件を外す'));
+    confirm.mockRestore();
   });
 
   it('電話・都道府県で絞り込める', () => {
