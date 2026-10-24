@@ -248,3 +248,117 @@ export function ncsJudge(st) {
   if (!st) return 'none';
   return st.ncsWon ? 'won' : st.waiting ? 'waiting' : st.revisit ? 'revisit' : 'open';
 }
+
+/**
+ * 方針書用の訪問・受注レポート（期間内の訪問と、その訪問のあとの受注）
+ * - 工場ごとの起点 = 期間内の最初の訪問日。受注はその翌日〜期間の終わり（データ最終日まで）
+ * - 月別の受注は受注日の月で数える
+ * @param {{ rows:object[], itemOk:Function, visits:object[], from:string, to:string, lastDate:number,
+ *           targetCount:number, todayNum:number, revisitDays:number, infoOf:(key:string)=>{area:string,address:string,tel:string} }} opt
+ */
+export function buildVisitReport({ rows, itemOk, visits, from, to, lastDate, targetCount, todayNum, revisitDays, infoOf }) {
+  const fromN = dateNum(from);
+  const toN = dateNum(to);
+  const inPeriod = visits
+    .filter(v => { const d = dateNum(v.date); return d && d >= fromN && d <= toN; })
+    .sort((a, b) => dateNum(a.date) - dateNum(b.date) || String(a.createdAt).localeCompare(String(b.createdAt)));
+
+  // 工場ごと（期間内の訪問だけ）
+  const fs = new Map();
+  for (const v of inPeriod) {
+    if (!fs.has(v.factoryKey)) fs.set(v.factoryKey, { key: v.factoryKey, tel: v.tel || '', vs: [] });
+    const f = fs.get(v.factoryKey);
+    f.vs.push(v);
+    if (v.tel) f.tel = v.tel;
+  }
+  const byKey = new Map();
+  const byTel = new Map();
+  for (const f of fs.values()) {
+    f.since = dateNum(f.vs[0].date);
+    Object.assign(f, { ncsQty: 0, ncsSales: 0, ncsFirst: 0, allQty: 0, allSales: 0, byLease: new Map() });
+    byKey.set(f.key, f);
+    const d = digits(f.tel);
+    if (d) byTel.set(d, f);
+  }
+
+  // 月の枠（期間の最初の月〜最後の月）
+  const ymOf = n => Math.floor(n / 100);
+  const months = new Map();
+  if (fromN && toN && fromN <= toN) {
+    let y = Math.floor(fromN / 10000), m = Math.floor(fromN / 100) % 100;
+    while (y * 100 + m <= ymOf(toN)) {
+      months.set(y * 100 + m, { ym: y * 100 + m, visits: 0, factories: new Set(), ncsQty: 0, ncsSales: 0, firstWon: 0 });
+      if (++m > 12) { m = 1; y++; }
+    }
+  }
+  for (const v of inPeriod) {
+    const mo = months.get(ymOf(dateNum(v.date)));
+    if (mo) { mo.visits++; mo.factories.add(v.factoryKey); }
+  }
+
+  if (byKey.size) {
+    for (const r of rows) {
+      const f = byKey.get(factoryKey(r)) || (r.phoneSearchStr ? byTel.get(String(r.phoneSearchStr)) : undefined);
+      if (!f || !itemOk(r)) continue;
+      const d = dateNum(r.date);
+      if (d <= f.since || d > toN) continue;
+      const q = Number(r.quantity) || 0;
+      const sales = Number(r.sales) || 0;
+      const lease = r.leaseCompany || '(未分類)';
+      f.allQty += q;
+      f.allSales += sales;
+      f.byLease.set(lease, (f.byLease.get(lease) || 0) + q);
+      if (lease === NCS) {
+        f.ncsQty += q;
+        f.ncsSales += sales;
+        if (q > 0 && (!f.ncsFirst || d < f.ncsFirst)) f.ncsFirst = d;
+        const mo = months.get(ymOf(d));
+        if (mo) { mo.ncsQty += q; mo.ncsSales += sales; }
+      }
+    }
+  }
+
+  const factories = [...fs.values()].map(f => {
+    const last = f.vs[f.vs.length - 1];
+    const lastN = dateNum(last.date);
+    const won = f.ncsQty > 0;
+    const waiting = lastDate <= f.since;
+    const revisit = !won && !waiting && daysBetween(lastN, todayNum) >= revisitDays;
+    const judge = won ? 'NCS受注あり' : waiting ? 'データ待ち' : revisit ? '再訪問候補' : '未受注';
+    if (won) { const mo = months.get(ymOf(f.ncsFirst)); if (mo) mo.firstWon++; }
+    const info = infoOf(f.key);
+    return {
+      key: f.key, judge, area: info.area, address: info.address, tel: info.tel || f.tel,
+      visitCount: f.vs.length, first: f.vs[0].date, last: last.date, lastResult: last.result || '', lastMemo: last.memo || '',
+      ncsQty: f.ncsQty, ncsSales: f.ncsSales, ncsFirst: f.ncsFirst, allQty: f.allQty, allSales: f.allSales,
+      byLease: [...f.byLease].filter(([, q]) => q).sort((a, b) => b[1] - a[1]),
+    };
+  });
+  const JUDGE_ORDER = { 'NCS受注あり': 0, '未受注': 1, '再訪問候補': 2, 'データ待ち': 3 };
+  factories.sort((a, b) => JUDGE_ORDER[a.judge] - JUDGE_ORDER[b.judge] || b.ncsQty - a.ncsQty
+    || a.area.localeCompare(b.area, 'ja') || a.key.localeCompare(b.key, 'ja'));
+
+  const sum = (arr, k) => arr.reduce((t, x) => t + x[k], 0);
+  const wonCount = factories.filter(f => f.ncsQty > 0).length;
+  const results = { '好感触': 0, '様子見': 0, '脈なし': 0, '未記入': 0 };
+  factories.forEach(f => { results[f.lastResult in results ? f.lastResult : '未記入']++; });
+  return {
+    from: fromN, to: toN, dataLast: Math.min(lastDate || toN, toN),
+    summary: {
+      targetCount,
+      visitedFactories: factories.length,
+      visits: inPeriod.length,
+      repeatFactories: factories.filter(f => f.visitCount >= 2).length,
+      results,
+      wonFactories: wonCount,
+      winRate: factories.length ? wonCount / factories.length : 0,
+      ncsQty: sum(factories, 'ncsQty'),
+      ncsSales: sum(factories, 'ncsSales'),
+      allQty: sum(factories, 'allQty'),
+      revisitFactories: factories.filter(f => f.judge === '再訪問候補').length,
+    },
+    monthly: [...months.values()].map(m => ({ ym: m.ym, visits: m.visits, factories: m.factories.size, ncsQty: m.ncsQty, ncsSales: m.ncsSales, firstWon: m.firstWon })),
+    factories,
+    visits: inPeriod.map(v => ({ date: v.date, area: infoOf(v.factoryKey).area, key: v.factoryKey, result: v.result || '', memo: v.memo || '' })),
+  };
+}
