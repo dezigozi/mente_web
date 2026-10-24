@@ -91,6 +91,17 @@ describe('NcsWorkTab', () => {
     confirm.mockRestore();
   });
 
+  it('実績Excel：期間（初期値は今期10/1〜今日）を選んで出す', async () => {
+    const onExportReport = vi.fn(async () => {});
+    setup({ onExportReport });
+    fireEvent.click(screen.getByRole('button', { name: /実績Excel/ }));
+    expect(screen.getByLabelText('レポート開始日').value).toMatch(/^\d{4}-10-01$/);
+    fireEvent.change(screen.getByLabelText('レポート開始日'), { target: { value: '2026-10-01' } });
+    fireEvent.change(screen.getByLabelText('レポート終了日'), { target: { value: '2026-12-31' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Excelを出す' }));
+    await vi.waitFor(() => expect(onExportReport).toHaveBeenCalledWith('2026-10-01', '2026-12-31'));
+  });
+
   it('電話・都道府県で絞り込める', () => {
     setup();
     fireEvent.change(screen.getByPlaceholderText('022'), { target: { value: '011' } });
@@ -104,7 +115,7 @@ describe('NcsWorkTab', () => {
     setup();
     // 未訪問が先（判定順）なので、浅井は最後
     expect(factoryNames()[0]).not.toBe('浅井自動車工業');
-    fireEvent.click(screen.getByRole('button', { expanded: false }));
+    fireEvent.click(screen.getByRole('button', { name: /（カレンダー）$/ }));
     fireEvent.click(screen.getByRole('button', { name: '前の月' }));
     while (!screen.queryByText('2026年10月')) fireEvent.click(screen.getByRole('button', { name: '次の月' }));
     fireEvent.click(screen.getByRole('button', { name: '横浜市 1' }));
@@ -115,7 +126,7 @@ describe('NcsWorkTab', () => {
   it('ダブルクリックで小窓。訪問日はカレンダーで選んだ日、保存で listId 空の記録', async () => {
     const onSaveVisit = vi.fn(async () => {});
     setup({ onSaveVisit });
-    fireEvent.click(screen.getByRole('button', { expanded: false }));
+    fireEvent.click(screen.getByRole('button', { name: /（カレンダー）$/ }));
     while (!screen.queryByText('2026年10月')) fireEvent.click(screen.getByRole('button', { name: '次の月' }));
     fireEvent.click(screen.getByRole('button', { name: '2026/10/20を訪問日にする' }));
     const row = screen.getByText('滝川自工').closest('tr');

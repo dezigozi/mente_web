@@ -13,9 +13,10 @@ import { clearCache } from './utils/db';
 import { loadCsvData, loadCsvDataFull, generateFullDataCsvContent, loadTabData } from './utils/csvLoader';
 import { writeTabRegisterXlsx } from './utils/tabRegisterXlsx';
 import { writeRoutePlanXlsx } from './utils/routePlanXlsx';
+import { writeNcsReportXlsx } from './utils/ncsReportXlsx';
 import {
   NCS, buildFactoryIndex, latestCompleteFiscalYear, buildNcsTargets, splitFy, topOrderers,
-  buildPostVisitStats, dateNum, fmtDateNum, daysBetween, areaOf, cityOf, factoryMatches, visitAreasByDate, ncsJudge,
+  buildPostVisitStats, dateNum, fmtDateNum, daysBetween, areaOf, cityOf, factoryMatches, visitAreasByDate, ncsJudge, fiscalYearOct, buildVisitReport,
 } from './utils/ncsTarget';
 import {
   loadAll, saveList, saveVisit, deleteVisit, exportAll, importAll, newId,
@@ -3983,6 +3984,22 @@ const NcsVisitView = ({ rows, leaseCompanies }) => {
     return { vs, first, last, stats, ncsWon, waiting, elapsed, nextNum, revisit };
   }, [visitsByFactory, postStats, index.lastDate, todayNum, revisitDays]);
 
+  /** 方針書用：期間内の訪問と、その後の受注を Excel に */
+  const exportReport = useCallback(async (from, to) => {
+    const poolMap = new Map(pool.map(x => [x.key, x]));
+    const infoOf = key => {
+      const f = index.factories.get(key);
+      const p = poolMap.get(key);
+      const address = p?.address || f?.address || '';
+      return { area: areaOf(address), address, tel: p?.tel || f?.tel || '' };
+    };
+    const report = buildVisitReport({
+      rows, itemOk: ncsItemOk, visits, from, to, lastDate: index.lastDate,
+      targetCount: pool.length, todayNum, revisitDays, infoOf,
+    });
+    await writeNcsReportXlsx(report, `NCS訪問実績_${from.replace(/-/g, '')}-${to.replace(/-/g, '')}.xlsx`);
+  }, [rows, visits, index, pool, todayNum, revisitDays]);
+
   // ---- バックアップ ----
   const fileRef = useRef(null);
   const [showMenu, setShowMenu] = useState(false);
@@ -4121,7 +4138,7 @@ const NcsVisitView = ({ rows, leaseCompanies }) => {
         <NcsWorkTab
           index={index} judgeFY={judgeFY} pool={pool} visitsByFactory={visitsByFactory} statusOf={statusOf}
           revisitDays={revisitDays} onChangeRevisitDays={setRevisitDays}
-          onSaveVisit={saveVisitAndShow} onDeleteVisit={deleteVisitAndHide} onRemoveTargets={removeTargets}
+          onSaveVisit={saveVisitAndShow} onDeleteVisit={deleteVisitAndHide} onRemoveTargets={removeTargets} onExportReport={exportReport}
         />
       )}
     </div>
@@ -4582,7 +4599,7 @@ const NcsVisitModal = ({ row, visits, defaultDate, years, factory, onSave, onDel
 };
 
 /** タブ2: 訪問・成果（ターゲット＋訪問した工場を1枚で。ダブルクリックで訪問記録） */
-const NcsWorkTab = ({ index, judgeFY, pool, visitsByFactory, statusOf, revisitDays = NCS_REVISIT_DAYS, onChangeRevisitDays, onSaveVisit, onDeleteVisit, onRemoveTargets }) => {
+const NcsWorkTab = ({ index, judgeFY, pool, visitsByFactory, statusOf, revisitDays = NCS_REVISIT_DAYS, onChangeRevisitDays, onSaveVisit, onDeleteVisit, onRemoveTargets, onExportReport }) => {
   const [phone, setPhone] = useState('');
   const [pref, setPref] = useState('');
   const [keyword, setKeyword] = useState('');
@@ -4600,6 +4617,25 @@ const NcsWorkTab = ({ index, judgeFY, pool, visitsByFactory, statusOf, revisitDa
   const [focus, setFocus] = useState(null); // カレンダーで選んだ { date, area, keys }
   const [checked, setChecked] = useState(new Set());
   const [modalKey, setModalKey] = useState(null);
+  const [showReport, setShowReport] = useState(false);
+  const [repFrom, setRepFrom] = useState(() => {
+    const t = ncsTodayIso();
+    return `${fiscalYearOct(Number(t.slice(0, 4)), Number(t.slice(5, 7)))}-10-01`; // 今期（10月始まり）の初日
+  });
+  const [repTo, setRepTo] = useState(ncsTodayIso);
+  const [repBusy, setRepBusy] = useState(false);
+  const handleReport = async () => {
+    if (!repFrom || !repTo || repFrom > repTo) { alert('期間を正しく入れてね（開始日 ≦ 終了日）'); return; }
+    setRepBusy(true);
+    try {
+      await onExportReport(repFrom, repTo);
+    } catch (e) {
+      console.error(e);
+      alert(`Excelを作れなかったよ: ${e?.message || e}`);
+    } finally {
+      setRepBusy(false);
+    }
+  };
   const years = useMemo(() => index.fiscalYears.slice(-4), [index]);
 
   /** ターゲット＋訪問記録のある工場（ターゲットから外した工場も記録があれば出す） */
@@ -4747,7 +4783,7 @@ const NcsWorkTab = ({ index, judgeFY, pool, visitsByFactory, statusOf, revisitDa
           <label className="space-y-1"><div className={labelCls}>エリア・住所・工場名</div>
             <input value={keyword} onChange={e => setKeyword(e.target.value)} placeholder="仙台市" className={inputCls} /></label>
           <div className="space-y-1"><div className={labelCls}>訪問日</div>
-            <button onClick={() => setShowCal(v => !v)} aria-expanded={showCal}
+            <button onClick={() => setShowCal(v => !v)} aria-expanded={showCal} aria-label={`訪問日 ${ncsSlash(visitDate)}（カレンダー）`}
               className={`flex items-center gap-2 px-4 py-2.5 rounded-2xl border text-sm font-black whitespace-nowrap ${showCal ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white text-slate-700 border-slate-200 hover:border-emerald-300'}`}>
               <Calendar size={15} /> {ncsSlash(visitDate)} {showCal ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
             </button>
@@ -4803,8 +4839,28 @@ const NcsWorkTab = ({ index, judgeFY, pool, visitsByFactory, statusOf, revisitDa
             className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-black bg-green-900 text-white hover:bg-emerald-600 disabled:opacity-40">
             <Download size={14} /> CSV出力
           </button>
+          <button onClick={() => setShowReport(v => !v)} aria-expanded={showReport}
+            className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-black bg-emerald-600 text-white hover:bg-emerald-700">
+            <FileSpreadsheet size={14} /> 実績Excel（方針書用）
+          </button>
         </div>
       </div>
+
+      {showReport && (
+        <div className="bg-white rounded-3xl shadow-sm border border-emerald-200 p-4 flex flex-wrap items-end gap-3 no-print">
+          <label className="space-y-1"><div className={labelCls}>訪問期間（開始）</div>
+            <input type="date" aria-label="レポート開始日" value={repFrom} onChange={e => setRepFrom(e.target.value)} className={inputCls} /></label>
+          <label className="space-y-1"><div className={labelCls}>訪問期間（終了）</div>
+            <input type="date" aria-label="レポート終了日" value={repTo} onChange={e => setRepTo(e.target.value)} className={inputCls} /></label>
+          <button onClick={handleReport} disabled={repBusy}
+            className="flex items-center gap-1.5 px-5 py-2.5 rounded-2xl text-xs font-black bg-green-900 text-white hover:bg-emerald-600 disabled:opacity-50">
+            <Download size={14} /> {repBusy ? '作成中…' : 'Excelを出す'}
+          </button>
+          <div className="text-[11px] font-bold text-slate-400 basis-full">
+            シート：サマリー（数字＋月別推移）／工場別成果／訪問記録。期間内に訪問した工場の、期間内の初回訪問の翌日〜終了日（データ最終日まで）の受注を数えるよ。上の絞り込みは効かず、全工場が対象。
+          </div>
+        </div>
+      )}
 
       <div className="bg-white rounded-3xl shadow-sm border border-slate-100 overflow-x-auto">
         <table className="w-full text-sm">
