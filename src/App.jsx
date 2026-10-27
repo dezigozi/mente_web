@@ -14,6 +14,7 @@ import { loadCsvData, loadCsvDataFull, generateFullDataCsvContent, loadTabData }
 import { writeTabRegisterXlsx } from './utils/tabRegisterXlsx';
 import { writeRoutePlanXlsx } from './utils/routePlanXlsx';
 import { writeNcsReportXlsx } from './utils/ncsReportXlsx';
+import { writeDashboardXlsx } from './utils/dashboardXlsx';
 import {
   NCS, buildFactoryIndex, latestCompleteFiscalYear, buildNcsTargets, splitFy, topOrderers,
   buildPostVisitStats, dateNum, fmtDateNum, daysBetween, areaOf, cityOf, factoryMatches, visitAreasByDate, ncsJudge, fiscalYearOct, buildVisitReport,
@@ -2106,6 +2107,28 @@ const DashboardView = memo(({
     }
   }
 
+  // PDF と同じ中身（チェックした行＋合計、展開中の子）を Excel に
+  const handleExcelExport = async () => {
+    const picked = displayData.filter(d => checkedItems.has(d.name));
+    if (!picked.length) { alert('Excelに出す行にチェックしてね'); return; }
+    const list = picked.map(d => ({
+      ...d,
+      address: showFactoryInfo ? (factoryAddressByBranch.get(d.name) || '').trim() : '',
+      phone: showFactoryInfo ? (factoryPhoneByBranch.get(d.name) || '').trim() : '',
+      children: canExpand && expanded.has(d.name) ? (factoryChildren.get(d.name) || NO_CHILDREN) : NO_CHILDREN,
+    }));
+    try {
+      await writeDashboardXlsx({
+        title: levelTitle, levelLabel, years, monthRange, rows: list,
+        totalLabel: totalRow?.name ?? null,
+        showSales: viewMode === 'A', showProfit, showFactoryInfo, amountUnit,
+      });
+    } catch (e) {
+      console.error(e);
+      alert(e?.message || 'Excelの作成に失敗したよ');
+    }
+  };
+
   // パンくずリスト
   const crumbs = viewMode === 'A' ? [
     {
@@ -2246,6 +2269,11 @@ const DashboardView = memo(({
               <button onClick={onSavePdf}
                 className="flex items-center gap-1.5 px-3 py-1.5 bg-white rounded-xl border border-slate-200 text-slate-600 hover:text-emerald-500 hover:border-emerald-200 transition-all shadow-sm text-xs font-bold">
                 <FileText size={14} /> PDF
+              </button>
+              <button onClick={handleExcelExport}
+                title="PDFと同じ表（チェックした行＋合計）をExcelで保存"
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-white rounded-xl border border-slate-200 text-slate-600 hover:text-emerald-500 hover:border-emerald-200 transition-all shadow-sm text-xs font-bold">
+                <FileSpreadsheet size={14} /> Excel
               </button>
               <button onClick={onSaveCsv}
                 className="flex items-center gap-1.5 px-3 py-1.5 bg-white rounded-xl border border-slate-200 text-slate-600 hover:text-emerald-500 hover:border-emerald-200 transition-all shadow-sm text-xs font-bold">
