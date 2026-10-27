@@ -5,7 +5,7 @@
  */
 import {
   font, colName, sumFormula, ratioFormula, yearColumns, ratioBase, drawBorders, writeYearHeader,
-  writeTitle, redBelow100, landscapePage, saveXlsx, SUB_FILL, QTY_FMT, RATIO_FMT,
+  writeTitle, writeUnit, redBelow100, landscapePage, saveXlsx, SUB_FILL, QTY_FMT, RATIO_FMT,
 } from './xlsxStyle.js';
 
 /**
@@ -46,7 +46,8 @@ export async function writeDashboardXlsx({
     if (y.ratio) ws.getColumn(y.ratio).width = 9;
   });
 
-  writeTitle(ws, title + (amountUnit === 'thousand' && (showSales || showProfit) ? '（千円）' : ''), lastCol);
+  writeTitle(ws, title, lastCol);
+  writeUnit(ws, showSales || showProfit ? (amountUnit === 'thousand' ? '（千円）' : '（円）') : '（台）', lastCol);
   const sm = parseInt(String(monthRange?.start ?? '4'), 10);
   const em = parseInt(String(monthRange?.end ?? '3'), 10);
   writeYearHeader(ws, labelHeads, yc, lastCol,
