@@ -5,7 +5,7 @@
  */
 import {
   font, colName, sumFormula, ratioFormula, yearColumns, ratioBase, drawBorders, writeYearHeader,
-  writeTitle, redBelow100, landscapePage, writeFooter, saveXlsx,
+  writeTitle, writeUnit, redBelow100, landscapePage, writeFooter, saveXlsx,
   SUB_FILL, QTY_FMT, RATIO_FMT, GREEN_900,
 } from './xlsxStyle.js';
 
@@ -21,6 +21,7 @@ function writeGroupedSheet(ws, { title, labelHeads, labelWidths, valueWidth = 15
   for (let k = L + 1; k <= lastCol; k++) ws.getColumn(k).width = valueWidth;
 
   writeTitle(ws, title, lastCol);
+  writeUnit(ws, '（台）', lastCol);
   writeYearHeader(ws, labelHeads, yc, lastCol, y => (y.prev ? `4月〜${info.lastMonth}月` : `${y.fy}/4〜${y.fy + 1}/3`));
 
   const start = 5;
@@ -98,6 +99,7 @@ function writeCarSheet(ws, { title, subTitle, items, itemLabel, carSum, top, sho
   const blockCol = bi => 1 + bi * (BLOCK + 1);
   const lastCol = blockCol(items.length - 1) + BLOCK - 1;
   writeTitle(ws, title, lastCol);
+  writeUnit(ws, '（台）', lastCol);
   ws.getCell(2, 1).value = subTitle;
   ws.getCell(2, 1).font = font(10, true);
 

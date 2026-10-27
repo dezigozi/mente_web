@@ -124,6 +124,14 @@ export function writeTitle(ws, title, lastCol) {
   dc.alignment = { horizontal: 'right', vertical: 'middle' };
 }
 
+/** 2行目の右端：表の単位（（台）・（千円）など）。右寄せ・下寄せ */
+export function writeUnit(ws, unit, lastCol) {
+  const c = ws.getCell(2, lastCol);
+  c.value = unit;
+  c.font = font(10);
+  c.alignment = { horizontal: 'right', vertical: 'bottom' };
+}
+
 /** 前年比の列は 100% 未満を赤 */
 export function redBelow100(ws, cols, r1, r2) {
   if (r2 < r1) return;
@@ -135,9 +143,9 @@ export function redBelow100(ws, cols, r1, r2) {
 
 /** A4横・幅1ページ・左右中央・見出し行を毎ページ（シートの最後に呼ぶ） */
 export function landscapePage(ws, titleRows = '3:4', ySplit = 4) {
-  // 行は全部 高さ中央
+  // 行は全部 高さ中央（単位のように下寄せを指定したセルはそのまま）
   ws.eachRow({ includeEmpty: true }, row => row.eachCell({ includeEmpty: true }, cell => {
-    cell.alignment = { ...(cell.alignment || {}), vertical: 'middle' };
+    cell.alignment = { ...(cell.alignment || {}), vertical: cell.alignment?.vertical || 'middle' };
   }));
   ws.views = [{ state: 'frozen', xSplit: 0, ySplit, zoomScale: 85 }];
   ws.pageSetup = {

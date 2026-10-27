@@ -1,6 +1,9 @@
 # PROGRESS
 
 ## いま何をやっているか
+Excel：表の右上（2行目の右端）に単位（台）（千円）（円）を右寄せ・下寄せで（`xlsxStyle.js` の writeUnit）。ダッシュボードの題名の（千円）は単位セルへ移動。master に merge・push 済み
+- 同じルールで架装品500・架装品売上にも Excel 出力を追加（各リポジトリの PROGRESS.md 参照）
+
 Excel：よく出る車種の題名を「オリックス自動車様　車種別出荷実績一覧」に（`LEASE_REPORT_XLSX_TITLE`。OR 以外は「◯◯様」）、Excel の品目は略さず「オルタネーター」（画面・印刷の「オルタ」はそのまま）。master に merge・push 済み
 - 実データの4種で題名と表記を確認、テスト42本・build 通過
 
