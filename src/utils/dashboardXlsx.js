@@ -185,12 +185,17 @@ export async function writeDashboardXlsx({
   ws.pageSetup = { orientation: 'landscape', fitToPage: true, fitToWidth: 1, fitToHeight: 0, paperSize: 9 };
   ws.pageSetup.printTitlesRow = '3:4';
 
+  await saveXlsx(wb, title);
+}
+
+/** ブックを「<名前>_YYYYMMDD.xlsx」で保存する */
+export async function saveXlsx(wb, name) {
   const buf = await wb.xlsx.writeBuffer();
   const blob = new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
   const d = new Date();
   const p = n => String(n).padStart(2, '0');
-  const safeTitle = String(title).replace(/[\\/:*?"<>|]/g, '_');
-  const fileName = `${safeTitle}_${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}.xlsx`;
+  const safeName = String(name).replace(/[\\/:*?"<>|]/g, '_');
+  const fileName = `${safeName}_${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}.xlsx`;
 
   // 保存先を選べるブラウザ（Chrome/Edge）はデスクトップを初期位置にする
   if (window.showSaveFilePicker) {

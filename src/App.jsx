@@ -15,6 +15,7 @@ import { writeTabRegisterXlsx } from './utils/tabRegisterXlsx';
 import { writeRoutePlanXlsx } from './utils/routePlanXlsx';
 import { writeNcsReportXlsx } from './utils/ncsReportXlsx';
 import { writeDashboardXlsx } from './utils/dashboardXlsx';
+import { writeLeaseReportXlsx } from './utils/leaseReportXlsx';
 import {
   NCS, buildFactoryIndex, latestCompleteFiscalYear, buildNcsTargets, splitFy, topOrderers,
   buildPostVisitStats, dateNum, fmtDateNum, daysBetween, areaOf, cityOf, factoryMatches, visitAreasByDate, ncsJudge, fiscalYearOct, buildVisitReport,
@@ -1536,6 +1537,26 @@ const LeaseReportView = memo(({ rows }) => {
     ncsDownload(new Blob(['﻿' + out.join('\r\n')], { type: 'text/csv;charset=utf-8' }), `${lease}_${kind}.csv`);
   };
 
+  // 印刷と同じ中身を Excel に（工場別は開いている工場だけ内訳つき、車種は表示中の上位＋その他）
+  const handleExcel = async () => {
+    try {
+      await writeLeaseReportXlsx({
+        tab,
+        fileName: LEASE_REPORT_FILE_NAME[tab],
+        title: printTitle || `${lease}　${LEASE_REPORT_TAB_TITLE[tab]}`,
+        items: REBUILD_ITEMS, itemLabel: LEASE_REPORT_ITEM_LABEL,
+        footer: printTitle ? 'アライ電機産業株式会社' : null,
+        years, info, bottomTotal,
+        factories: shownFactories, openKey,
+        clientRows: clientSum?.rows, clientName: shortClientName,
+        carSum, carSubTitle: `${carFyLabel(carFy)}　${scopeText}`, carTop: LEASE_REPORT_CAR_TOP, carShowAll, carPartial,
+      });
+    } catch (e) {
+      console.error(e);
+      alert(e?.message || 'Excelの作成に失敗したよ');
+    }
+  };
+
   /** PDF の保存名は document.title になるので、印刷の間だけ「工場別レポート_20261023」にする */
   const handlePrint = () => {
     flushSync(() => setRenderLimit(Infinity));
@@ -1587,6 +1608,9 @@ const LeaseReportView = memo(({ rows }) => {
         <div className="ml-auto flex gap-2">
           <button onClick={handleCsv} className="flex items-center gap-2 px-4 py-2.5 rounded-2xl text-xs font-black bg-white border border-slate-200 text-slate-600 hover:text-emerald-600 hover:border-emerald-300 shadow-sm">
             <Download size={14} /> CSV
+          </button>
+          <button onClick={handleExcel} title="印刷と同じ表をExcelで保存" className="flex items-center gap-2 px-4 py-2.5 rounded-2xl text-xs font-black bg-white border border-slate-200 text-slate-600 hover:text-emerald-600 hover:border-emerald-300 shadow-sm">
+            <FileSpreadsheet size={14} /> Excel
           </button>
           <button onClick={handlePrint} className="flex items-center gap-2 px-4 py-2.5 rounded-2xl text-xs font-black bg-green-900 text-white hover:bg-emerald-600 shadow-sm">
             <FileText size={14} /> 印刷
