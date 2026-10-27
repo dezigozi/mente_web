@@ -1,6 +1,9 @@
 # PROGRESS
 
 ## いま何をやっているか
+Excel の見出しを全部真ん中寄せ、全セルを高さ中央に（`xlsxStyle.js` の writeYearHeader と landscapePage、車種の見出し）。master に merge・push 済み
+- 4種の見本で全セル vertical=middle・見出し center を確認。テスト42本・build 通過
+
 Excel 出力の書式を、たかたかが手直しした支店別レポート（Desktop の 支店別レポート_20261027.xlsx）にそろえた。master に merge・push 済み
 - 共通ルールは `src/utils/xlsxStyle.js`：黒字（見出しだけ緑地白）、罫線は区切り細線・中は点線、小計は下で薄緑（EBF1DE）、前年比は今年÷前年（100%未満赤・条件付き書式）、最初の年度は前年比の列なし、右上に日付、A4横・幅1ページ
 - 適用先：リース会社別（工場別・支店別・よく出る車種）とダッシュボードの年次実績比較（合計は下へ移動）。ルート計画書・タブ登録・NCS実績Excel は別ツールのひな型なので触っていない
