@@ -1375,6 +1375,8 @@ const LEASE_REPORT_TAB_TITLE = {
 };
 /** 提出用の印刷（工場別・支店別）：ブラウザのヘッダー/フッターを消すため余白0、余白は各ページに中で付ける */
 const LEASE_REPORT_PRINT_TITLE = { factory: '工場別ご実績', client: '支店別ご実績' };
+/** Excel の題名（印刷の題名がないタブ用） */
+const LEASE_REPORT_XLSX_TITLE = { car: '車種別出荷実績一覧' };
 const LEASE_REPORT_CAR_PRINT_CSS = `@media print {
   @page { size: A4 landscape; margin: 0; }
   .lease-print-sheet { padding: 8mm 10mm; -webkit-box-decoration-break: clone; box-decoration-break: clone; }
@@ -1543,8 +1545,9 @@ const LeaseReportView = memo(({ rows }) => {
       await writeLeaseReportXlsx({
         tab,
         fileName: LEASE_REPORT_FILE_NAME[tab],
-        title: printTitle || `${lease}　${LEASE_REPORT_TAB_TITLE[tab]}`,
-        items: REBUILD_ITEMS, itemLabel: LEASE_REPORT_ITEM_LABEL,
+        title: printTitle || `${LEASE_REPORT_LEASE_NAME[lease] || lease}様　${LEASE_REPORT_XLSX_TITLE[tab]}`,
+        // Excel は品目を略さない（オルタ → オルタネーター）
+        items: REBUILD_ITEMS, itemLabel: {},
         footer: printTitle ? 'アライ電機産業株式会社' : null,
         years, info, bottomTotal,
         factories: shownFactories, openKey,
