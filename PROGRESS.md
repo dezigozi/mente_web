@@ -1,6 +1,11 @@
 # PROGRESS
 
 ## いま何をやっているか
+Excel の手直し（master に merge・push 済み）
+- 工場別：内訳を開いた工場がないときは品目の列を作らず、幅を実績の列に回す（工場計の品目は県の列に）。開いているときは従来どおり 工場・県・品目
+- Excel の中の文言は話し言葉にしない（車種の注意書き「前年比は前年同期間との比較。」、「データなし」）
+- 実データで作って Excel で確認、テスト42本・build 通過
+
 Excel の見出しを全部真ん中寄せ、全セルを高さ中央に（`xlsxStyle.js` の writeYearHeader と landscapePage、車種の見出し）。master に merge・push 済み
 - 4種の見本で全セル vertical=middle・見出し center を確認。テスト42本・build 通過
 

@@ -14,11 +14,11 @@ import {
  * groups: { labels: string[], align?: 'left'|'center' }[]（品目より前の見出し列。縦に結合）
  * rows:   { g: number, label: string, series?, sumOf?: number[] (rows の添字), sub?: boolean, indent?: number }[]
  */
-function writeGroupedSheet(ws, { title, labelHeads, labelWidths, years, info, groups, rows, footer }) {
+function writeGroupedSheet(ws, { title, labelHeads, labelWidths, valueWidth = 15.1, years, info, groups, rows, footer }) {
   const L = labelHeads.length;
   const { yc, lastCol } = yearColumns(years, L + 1, info.partial ? info.lastFy : null);
   labelWidths.forEach((w, i) => { ws.getColumn(i + 1).width = w; });
-  for (let k = L + 1; k <= lastCol; k++) ws.getColumn(k).width = 15.1;
+  for (let k = L + 1; k <= lastCol; k++) ws.getColumn(k).width = valueWidth;
 
   writeTitle(ws, title, lastCol);
   writeYearHeader(ws, labelHeads, yc, lastCol, y => (y.prev ? `4月〜${info.lastMonth}月` : `${y.fy}/4〜${y.fy + 1}/3`));
@@ -142,7 +142,7 @@ function writeCarSheet(ws, { title, subTitle, items, itemLabel, carSum, top, sho
 
     let r = 4;
     shown.forEach((x, i) => { put(r, i + 1, x.car, x.qty, x.prev); r++; });
-    if (!g.rows.length) { ws.getCell(r, c0 + 1).value = 'データがないよ'; ws.getCell(r, c0 + 1).font = font(10); r++; }
+    if (!g.rows.length) { ws.getCell(r, c0 + 1).value = 'データなし'; ws.getCell(r, c0 + 1).font = font(10); r++; }
     const otherRow = other ? r : 0;
     if (other) { put(r, null, `その他（${(g.rows.length - shown.length).toLocaleString()}車種）`, other.qty, other.prev); r++; }
     let totalRow = 0;
@@ -161,7 +161,7 @@ function writeCarSheet(ws, { title, subTitle, items, itemLabel, carSum, top, sho
     redBelow100(ws, [c0 + 3], 4, r - 1);
     maxRow = Math.max(maxRow, r);
   });
-  ws.getCell(maxRow + 1, 1).value = `車種＝車種名（メーカー）＋車輌型式のハイフンより前。前年比は${partial ? '前年同期間' : '前年度'}と比べてるよ`;
+  ws.getCell(maxRow + 1, 1).value = `車種＝車種名（メーカー）＋車輌型式のハイフンより前。前年比は${partial ? '前年同期間' : '前年度'}との比較。`;
   ws.getCell(maxRow + 1, 1).font = font(8);
 
   landscapePage(ws, '3:3', 3);
@@ -198,12 +198,24 @@ export async function writeLeaseReportXlsx(p) {
   const rows = [];
   const add = row => { rows.push(row); return rows.length - 1; };
   let labelHeads, labelWidths, sheetName;
+  let valueWidth = 15.1;
   if (p.tab === 'factory') {
     sheetName = '工場別';
-    labelHeads = ['工場', '県', '品目'];
-    labelWidths = [34, 9, 16];
+    // 内訳を開いた工場がなければ品目の列は作らず、その幅を実績の列に回す（工場計の品目は県の列に）
+    const hasOpen = p.factories.some(f => f.key === p.openKey);
+    labelHeads = hasOpen ? ['工場', '県', '品目'] : ['工場', '県'];
+    labelWidths = hasOpen ? [34, 9, 16] : [34, 14];
+    if (!hasOpen) {
+      const n = yearColumns(p.years, 1, p.info.partial ? p.info.lastFy : null).lastCol;
+      valueWidth += (16 - 5) / n;
+    }
     const totals = [];
     for (const f of p.factories) {
+      if (!hasOpen) {
+        const g = groups.push({ labels: [f.key], align: 'left' }) - 1;
+        totals.push(add({ g, label: f.pref, series: f.total }));
+        continue;
+      }
       const g = groups.push({ labels: [f.key, f.pref], align: 'left' }) - 1;
       if (f.key !== p.openKey) { totals.push(add({ g, label: '', series: f.total })); continue; }
       // 開いている工場は 品目（＋分析名）→ 計
@@ -215,7 +227,7 @@ export async function writeLeaseReportXlsx(p) {
       totals.push(add({ g, label: '計', sumOf: itemRows, sub: true }));
     }
     if (p.bottomTotal) {
-      const g = groups.push({ labels: ['工場計', ''] }) - 1;
+      const g = groups.push({ labels: hasOpen ? ['工場計', ''] : ['工場計'] }) - 1;
       p.items.forEach(it => add({ g, label: label(it), series: p.bottomTotal.items.get(it) }));
       add({ g, label: '計', sumOf: totals, sub: true });
     }
@@ -238,7 +250,7 @@ export async function writeLeaseReportXlsx(p) {
     }
   }
   writeGroupedSheet(wb.addWorksheet(sheetName), {
-    title: p.title, labelHeads, labelWidths, years: p.years, info: p.info, groups, rows, footer: p.footer,
+    title: p.title, labelHeads, labelWidths, valueWidth, years: p.years, info: p.info, groups, rows, footer: p.footer,
   });
   await saveXlsx(wb, p.fileName);
 }
