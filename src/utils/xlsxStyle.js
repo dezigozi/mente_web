@@ -83,7 +83,7 @@ export function writeYearHeader(ws, labelHeads, yc, lastCol, periodOf) {
       const cell = ws.getCell(r, k);
       cell.font = font(r === 3 || k <= labelHeads.length ? 10 : 8, true, 'FFFFFFFF');
       cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: GREEN_900 } };
-      cell.alignment = { horizontal: k <= labelHeads.length ? 'left' : 'center', vertical: 'middle', shrinkToFit: r === 4 };
+      cell.alignment = { horizontal: 'center', vertical: 'middle', shrinkToFit: r === 4 };
     }
   }
   labelHeads.forEach((h, i) => {
@@ -133,8 +133,12 @@ export function redBelow100(ws, cols, r1, r2) {
   }));
 }
 
-/** A4横・幅1ページ・左右中央・見出し行を毎ページ */
+/** A4横・幅1ページ・左右中央・見出し行を毎ページ（シートの最後に呼ぶ） */
 export function landscapePage(ws, titleRows = '3:4', ySplit = 4) {
+  // 行は全部 高さ中央
+  ws.eachRow({ includeEmpty: true }, row => row.eachCell({ includeEmpty: true }, cell => {
+    cell.alignment = { ...(cell.alignment || {}), vertical: 'middle' };
+  }));
   ws.views = [{ state: 'frozen', xSplit: 0, ySplit, zoomScale: 85 }];
   ws.pageSetup = {
     orientation: 'landscape', paperSize: 9, fitToPage: true, fitToWidth: 1, fitToHeight: 0, horizontalCentered: true,

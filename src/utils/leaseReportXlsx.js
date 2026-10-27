@@ -112,7 +112,7 @@ function writeCarSheet(ws, { title, subTitle, items, itemLabel, carSum, top, sho
       cell.value = h;
       cell.font = font(10, true, 'FFFFFFFF');
       cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: GREEN_900 } };
-      cell.alignment = { horizontal: k === 1 ? 'left' : 'center', vertical: 'middle' };
+      cell.alignment = { horizontal: 'center', vertical: 'middle' };
     });
 
     const g = carSum.items.get(it);
