@@ -4364,6 +4364,8 @@ const NcsTargetTab = ({ index, leaseCompanies, judgeFY, setJudgeFY, pool = [], p
   const otherTotal = useMemo(() => targets.reduce((t, x) => t + x.judge.other, 0), [targets]);
   /** 対象（NCSゼロ）の OR 台数と目標 */
   const orTotal = useMemo(() => targets.reduce((t, x) => t + (x.isTarget ? x.or : 0), 0), [targets]);
+  /** チェックした工場の OR 台数（目標はこの30%） */
+  const checkedOr = useMemo(() => [...checked].reduce((t, k) => t + goalBaseQty(index.factories.get(k), judgeFY), 0), [checked, index, judgeFY]);
   /** いまのターゲットのうちエリア外（訪問した工場は残す） */
   const poolOut = useMemo(() => {
     if (!Object.keys(area).length) return { remove: [], visited: 0 };
@@ -4520,6 +4522,11 @@ const NcsTargetTab = ({ index, leaseCompanies, judgeFY, setJudgeFY, pool = [], p
         <div className="ml-auto flex flex-wrap gap-2">
           {notice && <span className="self-center text-xs font-black text-amber-700">{notice}</span>}
           <span className="self-center text-xs font-black text-slate-500">チェック {checked.size}件</span>
+          {checked.size > 0 && (
+            <span className="self-center text-xs font-black text-amber-700" title={`${NCS_GOAL_LEASE} ${checkedOr.toLocaleString()}台 × ${NCS_GOAL_PCT}%`}>
+              目標 NCS {goalTotal(checkedOr).toLocaleString()} 台
+            </span>
+          )}
           <button onClick={handleRouteExport} disabled={!checked.size}
             className="flex items-center gap-1.5 px-4 py-2.5 rounded-2xl text-xs font-black border border-green-900 text-green-900 hover:bg-green-50 disabled:opacity-40">
             <FileSpreadsheet size={14} /> ルート計画書Excel
