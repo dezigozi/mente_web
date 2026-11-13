@@ -196,7 +196,7 @@ export function buildPostVisitStats(rows, itemOk, targets) {
  * 政令市は区まで、それ以外は市 / 郡＋町村 / 東京23区。拾えなければ空
  */
 export function areaOf(address) {
-  const a = String(address ?? '').normalize('NFKC').trim().replace(/^(東京都|北海道|京都府|大阪府|.{2,3}県)/, '');
+  const a = String(address ?? '').normalize('NFKC').trim().replace(/^(東京都|北海道|京都府|大阪府|.{2,3}県)/, '').trim();
   const m = a.match(/^(.{1,6}?市市?.{1,4}?区)/) || a.match(/^(.{1,6}?市市?)/) || a.match(/^(.{1,5}?郡.{1,5}?[町村])/)
     || a.match(/^(.{1,4}?区)/) || a.match(/^(.{1,5}?[町村])/);
   return m ? m[1] : '';
@@ -361,4 +361,78 @@ export function buildVisitReport({ rows, itemOk, visits, from, to, lastDate, tar
     factories,
     visits: inPeriod.map(v => ({ date: v.date, area: infoOf(v.factoryKey).area, key: v.factoryKey, result: v.result || '', memo: v.memo || '' })),
   };
+}
+
+// ===== 行けるエリア（ターゲットを県・市で絞る） =====
+
+/** 地方ごとの都道府県（エリア選びの並び） */
+export const NCS_REGIONS = [
+  ['北海道・東北', ['北海道', '青森県', '岩手県', '宮城県', '秋田県', '山形県', '福島県']],
+  ['関東', ['茨城県', '栃木県', '群馬県', '埼玉県', '千葉県', '東京都', '神奈川県']],
+  ['中部', ['新潟県', '富山県', '石川県', '福井県', '山梨県', '長野県', '岐阜県', '静岡県', '愛知県']],
+  ['近畿', ['三重県', '滋賀県', '京都府', '大阪府', '兵庫県', '奈良県', '和歌山県']],
+  ['中国・四国', ['鳥取県', '島根県', '岡山県', '広島県', '山口県', '徳島県', '香川県', '愛媛県', '高知県']],
+  ['九州・沖縄', ['福岡県', '佐賀県', '長崎県', '熊本県', '大分県', '宮崎県', '鹿児島県', '沖縄県']],
+];
+
+/**
+ * 行けるエリアに入っているか
+ * @param {Record<string, true|string[]>} sel 県 → true（県まるごと）か 市の配列。空＝全国
+ */
+export function inNcsArea(sel, pref, city) {
+  if (!sel || !Object.keys(sel).length) return true;
+  const e = sel[pref];
+  if (!e) return false;
+  return e === true || e.includes(city);
+}
+
+/**
+ * 県・市ごとの工場数と台数（エリア選びのチップ用）
+ * @param {{ pref:string, city:string, other:number, or:number }[]} items
+ * @returns {Map<string, { n:number, other:number, or:number, cities: Map<string, { n:number, other:number, or:number }> }>}
+ */
+export function buildAreaStats(items) {
+  const out = new Map();
+  const add = (o, x) => { o.n++; o.other += x.other; o.or += x.or; };
+  for (const x of items) {
+    let p = out.get(x.pref);
+    if (!p) { p = { n: 0, other: 0, or: 0, cities: new Map() }; out.set(x.pref, p); }
+    add(p, x);
+    let c = p.cities.get(x.city);
+    if (!c) { c = { n: 0, other: 0, or: 0 }; p.cities.set(x.city, c); }
+    add(c, x);
+  }
+  return out;
+}
+
+// ===== 目標（OR の実績 × 30%） =====
+export const NCS_GOAL_LEASE = 'OR';
+export const NCS_GOAL_PCT = 30;
+
+/** 年度の OR 台数（目標の元） */
+export function goalBaseQty(f, fy) {
+  return f?.byFy?.get(fy)?.get(NCS_GOAL_LEASE) || 0;
+}
+
+/** 目標の合計 = OR 合計 × 30%（四捨五入） */
+export function goalTotal(baseSum, pct = NCS_GOAL_PCT) {
+  return Math.floor((baseSum * pct + 50) / 100);
+}
+
+/**
+ * 目標を工場に配る。合計は goalTotal から1台もずらさず、端数は最大剰余法（同じなら OR の多い工場→名前順）
+ * @param {{ key:string, base:number }[]} items base = OR 台数
+ * @returns {{ base:number, total:number, byKey: Map<string, number> }}
+ */
+export function allocateGoals(items, pct = NCS_GOAL_PCT) {
+  const rows = items.map(x => {
+    const exact = (x.base || 0) * pct; // 100倍のまま整数で持つ
+    return { key: x.key, base: x.base || 0, goal: Math.floor(exact / 100), rem: exact % 100 };
+  });
+  const base = rows.reduce((t, x) => t + x.base, 0);
+  const total = goalTotal(base, pct);
+  let left = total - rows.reduce((t, x) => t + x.goal, 0);
+  [...rows].sort((a, b) => b.rem - a.rem || b.base - a.base || a.key.localeCompare(b.key, 'ja'))
+    .forEach(x => { if (left > 0 && x.rem > 0) { x.goal++; left--; } });
+  return { base, total, byKey: new Map(rows.map(x => [x.key, x.goal])) };
 }

@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { buildNcsTargets, NCS, factoryMatches, visitAreasByDate, ncsJudge, cityOf } from './ncsTarget.js';
+import {
+  buildNcsTargets, NCS, factoryMatches, visitAreasByDate, ncsJudge, cityOf,
+  inNcsArea, buildAreaStats, goalBaseQty, goalTotal, allocateGoals,
+} from './ncsTarget.js';
 
 const fac = (key, other, ncs = 0) => ({
   key, phones: [], pref: '東京都', address: "",
@@ -72,5 +75,57 @@ describe('cityOf', () => {
     expect(cityOf('千葉県市川市八幡1')).toBe('市川市');
     expect(cityOf('東京都練馬区北町3-5-1')).toBe('練馬区');
     expect(cityOf('北海道虻田郡倶知安町1')).toBe('虻田郡倶知安町');
+  });
+
+  it('県名のあとの空白は詰める', () => {
+    expect(cityOf('北海道 石狩市新港1')).toBe('石狩市');
+  });
+});
+
+describe('inNcsArea', () => {
+  it('空なら全国、県まるごと、市の指定', () => {
+    expect(inNcsArea({}, '北海道', '稚内市')).toBe(true);
+    const sel = { '東京都': true, '北海道': ['札幌市', '小樽市'] };
+    expect(inNcsArea(sel, '東京都', '八王子市')).toBe(true);
+    expect(inNcsArea(sel, '北海道', '札幌市')).toBe(true);
+    expect(inNcsArea(sel, '北海道', '稚内市')).toBe(false);
+    expect(inNcsArea(sel, '宮城県', '仙台市')).toBe(false);
+  });
+});
+
+describe('buildAreaStats', () => {
+  it('県と市ごとに工場数・他社・OR を足す', () => {
+    const m = buildAreaStats([
+      { pref: '宮城県', city: '仙台市', other: 10, or: 6 },
+      { pref: '宮城県', city: '仙台市', other: 4, or: 0 },
+      { pref: '宮城県', city: '石巻市', other: 3, or: 3 },
+      { pref: '北海道', city: '札幌市', other: 7, or: 5 },
+    ]);
+    expect(m.get('宮城県')).toMatchObject({ n: 3, other: 17, or: 9 });
+    expect(m.get('宮城県').cities.get('仙台市')).toEqual({ n: 2, other: 14, or: 6 });
+    expect(m.get('北海道').cities.size).toBe(1);
+  });
+});
+
+describe('目標（OR の30%）', () => {
+  it('判定年度の OR 台数', () => {
+    const f = { byFy: new Map([[2025, new Map([['OR', 147], ['MAL', 2]])]]) };
+    expect(goalBaseQty(f, 2025)).toBe(147);
+    expect(goalBaseQty(f, 2024)).toBe(0);
+    expect(goalBaseQty(undefined, 2025)).toBe(0);
+  });
+  it('合計は OR 合計 × 30% の四捨五入', () => {
+    expect(goalTotal(7419)).toBe(2226); // 2225.7
+    expect(goalTotal(5)).toBe(2); // 1.5 → 2
+    expect(goalTotal(0)).toBe(0);
+  });
+  it('工場に配っても合計は1台もずれない（端数は余りの大きい順）', () => {
+    const items = [{ key: 'A', base: 147 }, { key: 'B', base: 121 }, { key: 'C', base: 1 }, { key: 'D', base: 2 }, { key: 'E', base: 0 }];
+    const g = allocateGoals(items);
+    expect(g.base).toBe(271);
+    expect(g.total).toBe(81); // 81.3
+    expect([...g.byKey.values()].reduce((t, x) => t + x, 0)).toBe(81);
+    // 44.1 / 36.3 / 0.3 / 0.6 / 0 → 床 80、残り1は余りが一番大きい D
+    expect(Object.fromEntries(g.byKey)).toEqual({ A: 44, B: 36, C: 0, D: 1, E: 0 });
   });
 });
