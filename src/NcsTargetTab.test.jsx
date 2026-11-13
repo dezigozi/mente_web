@@ -49,6 +49,16 @@ describe('NcsTargetTab 行けるエリア・目標', () => {
     expect(names()).toEqual(['札幌A']);
   });
 
+  it('チェックした工場だけの目標（OR × 30%）を出す', () => {
+    setup();
+    expect(screen.queryByText(/^目標 NCS \d+ 台$/)).toBeNull();
+    for (const n of ['札幌A', '稚内B']) fireEvent.click(screen.getByText(n).closest('tr').querySelector('td button'));
+    expect(screen.getByText('チェック 2件')).toBeTruthy();
+    const goal = screen.getByText(/^目標 NCS \d+ 台$/);
+    expect(goal.textContent).toBe('目標 NCS 33 台');
+    expect(goal.title).toBe('OR 110台 × 30%');
+  });
+
   it('エリア外のターゲットをまとめて外す（訪問した工場は残す）', async () => {
     const onRemoveTargets = vi.fn(async () => {});
     const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
