@@ -28,6 +28,16 @@ const setup = (props = {}) => render(
   <NcsWorkTab index={index} judgeFY={2025} pool={pool} visitsByFactory={visitsByFactory} statusOf={statusOf}
     onSaveVisit={vi.fn(async () => {})} onDeleteVisit={vi.fn()} onRemoveTargets={vi.fn()} {...props} />
 );
+/** カレンダーを指定の月まで送る（今日の月より前でも後でも） */
+const gotoMonth = (y, m) => {
+  for (let i = 0; i < 60; i++) {
+    const t = screen.getByText(/^\d{4}年\d{1,2}月$/).textContent.match(/(\d{4})年(\d{1,2})月/);
+    const diff = (y * 12 + m) - (Number(t[1]) * 12 + Number(t[2]));
+    if (!diff) return;
+    fireEvent.click(screen.getByRole('button', { name: diff < 0 ? '前の月' : '次の月' }));
+  }
+  throw new Error(`${y}年${m}月 に行けなかった`);
+};
 const factoryNames = () => screen.getAllByRole('row').slice(1).map(r => r.querySelector('td:nth-child(4) div')?.textContent);
 
 describe('NcsWorkTab', () => {
@@ -37,6 +47,16 @@ describe('NcsWorkTab', () => {
     expect(screen.getByText('訪問した工場').nextSibling.textContent).toBe('1');
     expect(factoryNames()).toHaveLength(3);
     expect(screen.getByText('窓口は佐藤さん')).toBeTruthy();
+  });
+
+  it('目標＝ターゲットの判定年度 OR × 30%、次の年度の NCS で達成率', () => {
+    setup();
+    const card = screen.getByText('目標（ORの30%）').parentElement;
+    expect(card.children[1].textContent).toBe('36');
+    expect(card.children[2].textContent).toBe('2026年度 NCS 0台・達成 0.0%');
+    const cells = screen.getByText('滝川自工').closest('tr').querySelectorAll('td');
+    expect(cells[6].textContent).toBe('36');
+    expect(cells[6].title).toBe('OR 120台 × 30%');
   });
 
   it('工場名の右に判定年度の NCS・他社', () => {
@@ -116,8 +136,7 @@ describe('NcsWorkTab', () => {
     // 未訪問が先（判定順）なので、浅井は最後
     expect(factoryNames()[0]).not.toBe('浅井自動車工業');
     fireEvent.click(screen.getByRole('button', { name: /（カレンダー）$/ }));
-    fireEvent.click(screen.getByRole('button', { name: '前の月' }));
-    while (!screen.queryByText('2026年10月')) fireEvent.click(screen.getByRole('button', { name: '次の月' }));
+    gotoMonth(2026, 10);
     fireEvent.click(screen.getByRole('button', { name: '横浜市 1' }));
     expect(factoryNames()[0]).toBe('浅井自動車工業');
     expect(screen.getByText(/横浜市 の1工場を上に表示中/)).toBeTruthy();
@@ -127,7 +146,7 @@ describe('NcsWorkTab', () => {
     const onSaveVisit = vi.fn(async () => {});
     setup({ onSaveVisit });
     fireEvent.click(screen.getByRole('button', { name: /（カレンダー）$/ }));
-    while (!screen.queryByText('2026年10月')) fireEvent.click(screen.getByRole('button', { name: '次の月' }));
+    gotoMonth(2026, 10);
     fireEvent.click(screen.getByRole('button', { name: '2026/10/20を訪問日にする' }));
     const row = screen.getByText('滝川自工').closest('tr');
     fireEvent.doubleClick(row);

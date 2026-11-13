@@ -19,6 +19,7 @@ import { writeLeaseReportXlsx } from './utils/leaseReportXlsx';
 import {
   NCS, buildFactoryIndex, latestCompleteFiscalYear, buildNcsTargets, splitFy, topOrderers,
   buildPostVisitStats, dateNum, fmtDateNum, daysBetween, areaOf, cityOf, factoryMatches, visitAreasByDate, ncsJudge, fiscalYearOct, buildVisitReport,
+  NCS_REGIONS, inNcsArea, buildAreaStats, NCS_GOAL_LEASE, NCS_GOAL_PCT, goalBaseQty, goalTotal, allocateGoals,
 } from './utils/ncsTarget';
 import {
   loadAll, saveList, saveVisit, deleteVisit, exportAll, importAll, newId,
@@ -3881,6 +3882,21 @@ const ncsLoadRevisitDays = () => {
 };
 /** ターゲット一覧の表示上限（多いときは地域で絞る誘導） */
 const NCS_TARGET_CAP = 300;
+/** 行けるエリア（県 → true か 市の配列。このブラウザに保存） */
+const NCS_AREA_LS_KEY = 'ncs_area_v1';
+const ncsLoadArea = () => {
+  try {
+    const o = JSON.parse(localStorage.getItem(NCS_AREA_LS_KEY) || '{}');
+    return o && typeof o === 'object' && !Array.isArray(o) ? o : {};
+  } catch (e) {
+    console.warn('行けるエリアを読めなかったので全国にするよ', e);
+    return {};
+  }
+};
+/** 工場の県・市（エリア選び用。県はデータの都道府県 → 無ければ空） */
+const ncsPrefCity = (pref, address) => ({ pref: pref || '', city: cityOf(address) || '(市区町村不明)' });
+/** 目標の見出し「ORの30%」 */
+const NCS_GOAL_LABEL = `${NCS_GOAL_LEASE}の${NCS_GOAL_PCT}%`;
 
 const ncsItemOk = r => !!r.item && ALLOWED_ITEM_NORM_SET.has(norm(r.item));
 const ncsTodayIso = () => {
@@ -4157,6 +4173,7 @@ const NcsVisitView = ({ rows, leaseCompanies }) => {
                   <div>ほかのリース会社では受注があるのに NCS だけ無い工場を拾って、訪問と訪問後の受注を追うページ。</div>
                   <div>受注数＝オルタネーター・スターター・コンプレッサー / 年度は10月〜9月 / データ最終日 {fmtDateNum(index.lastDate)}</div>
                   <div>訪問後の受注は初回訪問の翌日〜データ最終日。再訪問候補＝NCS未受注のまま最終訪問から{revisitDays}日たった工場（日数は訪問・成果タブで変えられる）。</div>
+                  <div>目標＝ターゲットの判定年度の {NCS_GOAL_LEASE} 台数 × {NCS_GOAL_PCT}%。達成は次の年度の NCS 台数で見る。</div>
                 </div>
                 {mode === 'shared' && (
                   <button onClick={() => { setShowMenu(false); reload(); }} className="w-full flex items-center gap-2 px-4 py-3 text-xs font-black text-slate-700 hover:bg-emerald-50 hover:text-emerald-700 transition-colors border-t border-slate-100">
@@ -4185,8 +4202,8 @@ const NcsVisitView = ({ rows, leaseCompanies }) => {
         <NcsTargetTab
           index={index} leaseCompanies={leaseCompanies}
           judgeFY={judgeFY} setJudgeFY={setJudgeFY}
-          poolKeys={poolKeys} visitLists={visitLists} statusOf={statusOf}
-          onAddTargets={addTargets}
+          pool={pool} poolKeys={poolKeys} visitLists={visitLists} statusOf={statusOf}
+          onAddTargets={addTargets} onRemoveTargets={removeTargets}
         />
       )}
       {tab === 'work' && (
@@ -4203,8 +4220,122 @@ const NcsVisitView = ({ rows, leaseCompanies }) => {
 const NCS_TH = 'px-3 py-3 text-[11px] font-black whitespace-nowrap';
 const ncsYmd = () => ncsTodayIso().replace(/-/g, '');
 
+/**
+ * 行けるエリア選び。県を押すと県まるごと、▾ で市を選ぶ。空＝全国
+ * @param {{ area:Record<string, true|string[]>, onChange:Function, stats:Map }} props stats = buildAreaStats の戻り値
+ */
+const NcsAreaPicker = ({ area, onChange, stats, poolCount, outCount, outVisited, removing, onRemoveOutside }) => {
+  const [openPref, setOpenPref] = useState(null);
+  const prefs = Object.keys(area);
+  const citiesOf = p => [...(stats.get(p)?.cities || new Map())].sort((a, b) => b[1].n - a[1].n || a[0].localeCompare(b[0], 'ja'));
+  const cityOn = (p, c) => area[p] === true || (Array.isArray(area[p]) && area[p].includes(c));
+  /** 選んでいる市の工場数（県まるごとなら県の数） */
+  const pickedN = p => (area[p] === true ? stats.get(p)?.n || 0
+    : citiesOf(p).reduce((t, [c, s]) => t + (cityOn(p, c) ? s.n : 0), 0));
+  const togglePref = p => {
+    const n = { ...area };
+    if (n[p] === true) delete n[p]; else n[p] = true; // 一部だけ選んでいる県を押すと県まるごと
+    onChange(n);
+  };
+  const toggleCity = (p, c) => {
+    const all = citiesOf(p).map(([x]) => x);
+    const cur = area[p] === true ? all : (area[p] || []);
+    const next = cur.includes(c) ? cur.filter(x => x !== c) : [...cur, c];
+    const n = { ...area };
+    if (!next.length) delete n[p];
+    else if (all.every(x => next.includes(x))) n[p] = true;
+    else n[p] = next;
+    onChange(n);
+  };
+  const tip = s => (s ? `対象 ${s.n}工場・他社 ${s.other}台・${NCS_GOAL_LEASE} ${s.or}台` : '対象なし');
+
+  return (
+    <div className="bg-white rounded-3xl shadow-sm border border-slate-100 p-6 space-y-3 no-print">
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="font-black text-slate-800">行けるエリア</div>
+        <div className="text-[11px] font-bold text-slate-400">先に決めると、その中の工場だけ下に出る。県を押すと県まるごと、県の右の ∨ で市を選べる。このブラウザに保存。</div>
+        <div className="ml-auto flex items-center gap-2">
+          <span className="text-xs font-black text-slate-600">{prefs.length ? `${prefs.length}県を選択中` : '全国'}</span>
+          {prefs.length > 0 && (
+            <button onClick={() => { onChange({}); setOpenPref(null); }}
+              className="px-3 py-1.5 rounded-xl text-xs font-black text-rose-500 border border-rose-200 hover:bg-rose-50">クリア（全国）</button>
+          )}
+        </div>
+      </div>
+      <div className="space-y-1.5">
+        {NCS_REGIONS.map(([region, list]) => (
+          <div key={region} className="flex flex-wrap items-center gap-1.5">
+            <span className="w-24 shrink-0 text-[10px] font-black text-slate-400 tracking-widest">{region}</span>
+            {list.map(p => {
+              const s = stats.get(p);
+              const st = area[p] === true ? 'all' : area[p] ? 'part' : 'off';
+              const cls = st === 'all' ? 'bg-emerald-500 text-white border-emerald-500'
+                : st === 'part' ? 'bg-emerald-50 text-emerald-700 border-emerald-400'
+                  : s ? 'bg-slate-50 text-slate-600 border-slate-200 hover:border-emerald-300' : 'bg-white text-slate-300 border-slate-100';
+              return (
+                <span key={p} className={`inline-flex items-stretch rounded-xl border text-xs font-black overflow-hidden ${cls} ${openPref === p ? 'ring-2 ring-amber-300' : ''}`}>
+                  <button onClick={() => togglePref(p)} title={tip(s)} aria-pressed={st !== 'off'} className="px-2.5 py-1">
+                    {p} <span className="opacity-70">{st === 'part' ? `${pickedN(p)}/${s?.n || 0}` : s?.n || 0}</span>
+                  </button>
+                  {s && (
+                    <button onClick={() => setOpenPref(openPref === p ? null : p)} aria-label={`${p}の市を選ぶ`} aria-expanded={openPref === p}
+                      className="px-1.5 border-l border-black/10 opacity-70 hover:opacity-100">
+                      {openPref === p ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+                    </button>
+                  )}
+                </span>
+              );
+            })}
+          </div>
+        ))}
+      </div>
+
+      {openPref && (
+        <div className="bg-amber-50/60 border border-amber-200 rounded-2xl p-3 space-y-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs font-black text-slate-700">{openPref}の市区町村</span>
+            <span className="text-[11px] font-bold text-slate-400">押して入れる／外す（数字は対象工場数）</span>
+            <button onClick={() => onChange({ ...area, [openPref]: true })}
+              className="ml-auto px-2.5 py-1 rounded-lg text-[11px] font-black text-emerald-700 border border-emerald-200 bg-white hover:bg-emerald-50">県まるごと</button>
+            <button onClick={() => { const n = { ...area }; delete n[openPref]; onChange(n); }}
+              className="px-2.5 py-1 rounded-lg text-[11px] font-black text-slate-500 border border-slate-200 bg-white hover:bg-slate-50">この県を外す</button>
+            <button onClick={() => setOpenPref(null)} aria-label="市の選択を閉じる" className="p-1 text-slate-400 hover:text-slate-600"><X size={14} /></button>
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {citiesOf(openPref).map(([c, s]) => {
+              const on = cityOn(openPref, c);
+              return (
+                <button key={c} onClick={() => toggleCity(openPref, c)} title={tip(s)} aria-pressed={on}
+                  className={`px-2.5 py-1 rounded-lg border text-xs font-black ${on ? 'bg-emerald-500 text-white border-emerald-500' : 'bg-white text-slate-600 border-slate-200 hover:border-emerald-300'}`}>
+                  {c} <span className="opacity-70">{s.n}</span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {prefs.length > 0 && poolCount > 0 && (outCount > 0 || outVisited > 0) && (
+        <div className="flex flex-wrap items-center gap-2 pt-1 text-xs font-bold text-slate-600">
+          <AlertCircle size={14} className="text-amber-500" />
+          いまのターゲット {poolCount.toLocaleString()}件のうち、エリア外が {(outCount + outVisited).toLocaleString()}件
+          {outVisited > 0 && <span className="text-slate-400">（訪問した {outVisited}件は残す）</span>}
+          {outCount > 0 && (
+            <button onClick={onRemoveOutside} disabled={removing}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-black text-rose-500 border border-rose-200 hover:bg-rose-50 disabled:opacity-40">
+              <Trash2 size={13} /> {removing ? '外しています…' : `エリア外の${outCount}件をターゲットから外す`}
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
+
 /** タブ1: ターゲット抽出 */
-const NcsTargetTab = ({ index, leaseCompanies, judgeFY, setJudgeFY, poolKeys, visitLists, statusOf, onAddTargets }) => {
+const NcsTargetTab = ({ index, leaseCompanies, judgeFY, setJudgeFY, pool = [], poolKeys, visitLists, statusOf, onAddTargets, onRemoveTargets }) => {
+  const [area, setAreaState] = useState(ncsLoadArea); // 行けるエリア（空＝全国）
+  const setArea = next => { setAreaState(next); ncsLsSet(NCS_AREA_LS_KEY, JSON.stringify(next)); };
   const [compareLeases, setCompareLeases] = useState(new Set()); // 空＝NCS以外すべて
   const [phone, setPhone] = useState('');
   const [pref, setPref] = useState('');
@@ -4216,13 +4347,53 @@ const NcsTargetTab = ({ index, leaseCompanies, judgeFY, setJudgeFY, poolKeys, vi
   const [adding, setAdding] = useState(false);
   const [notice, setNotice] = useState('');
 
-  const targets = useMemo(
-    () => buildNcsTargets(index.factories, { judgeFY, compareLeases, phone, pref, keyword, onlyTargets, minOther: Number(minOther) || 0 }),
+  /** エリア以外の条件で絞った工場（県・市・判定年度の OR 台数つき） */
+  const matched = useMemo(
+    () => buildNcsTargets(index.factories, { judgeFY, compareLeases, phone, pref, keyword, onlyTargets, minOther: Number(minOther) || 0 })
+      .map(x => ({ ...x, ...ncsPrefCity(x.f.pref, x.f.address), or: goalBaseQty(x.f, judgeFY) })),
     [index, judgeFY, compareLeases, phone, pref, keyword, onlyTargets, minOther]
   );
+  /** エリア選びのチップに出す 県・市ごとの対象工場数 */
+  const areaStats = useMemo(
+    () => buildAreaStats(matched.filter(x => x.isTarget).map(x => ({ pref: x.pref, city: x.city, other: x.judge.other, or: x.or }))),
+    [matched]
+  );
+  const targets = useMemo(() => matched.filter(x => inNcsArea(area, x.pref, x.city)), [matched, area]);
   const shown = useMemo(() => targets.slice(0, NCS_TARGET_CAP), [targets]);
   /** 絞り込み後の全工場（表示上限より先も含む）の判定年度 他社台数 */
   const otherTotal = useMemo(() => targets.reduce((t, x) => t + x.judge.other, 0), [targets]);
+  /** 対象（NCSゼロ）の OR 台数と目標 */
+  const orTotal = useMemo(() => targets.reduce((t, x) => t + (x.isTarget ? x.or : 0), 0), [targets]);
+  /** いまのターゲットのうちエリア外（訪問した工場は残す） */
+  const poolOut = useMemo(() => {
+    if (!Object.keys(area).length) return { remove: [], visited: 0 };
+    const remove = [];
+    let visited = 0;
+    for (const x of pool) {
+      const f = index.factories.get(x.key);
+      const pc = ncsPrefCity(x.pref || f?.pref, x.address || f?.address);
+      if (inNcsArea(area, pc.pref, pc.city)) continue;
+      if (statusOf(x.key)) visited++;
+      else remove.push(x.key);
+    }
+    return { remove, visited };
+  }, [area, pool, index, statusOf]);
+  const [removing, setRemoving] = useState(false);
+  const handleRemoveOutside = async () => {
+    const keys = poolOut.remove;
+    if (!keys.length) return;
+    if (!window.confirm(`エリア外のターゲット ${keys.length}件（未訪問）を外す？${poolOut.visited ? `\n訪問した ${poolOut.visited}件 は残すよ。` : ''}`)) return;
+    setRemoving(true);
+    try {
+      await onRemoveTargets(keys);
+      setNotice(`エリア外の ${keys.length}件をターゲットから外したよ`);
+      setTimeout(() => setNotice(''), 4000);
+    } catch (e) {
+      alert(`外せなかったよ: ${e?.message || e}`);
+    } finally {
+      setRemoving(false);
+    }
+  };
   const shownYears = useMemo(() => index.fiscalYears.filter(fy => fy <= judgeFY).slice(-4), [index, judgeFY]);
   const compareSet = compareLeases.size ? compareLeases : null;
   const otherLeases = useMemo(() => leaseCompanies.filter(l => l !== NCS && l !== '(未分類)'), [leaseCompanies]);
@@ -4281,6 +4452,11 @@ const NcsTargetTab = ({ index, leaseCompanies, judgeFY, setJudgeFY, poolKeys, vi
 
   return (
     <div className="space-y-6">
+      {/* 行けるエリア（先に決める） */}
+      <NcsAreaPicker area={area} onChange={setArea} stats={areaStats}
+        poolCount={pool.length} outCount={poolOut.remove.length} outVisited={poolOut.visited}
+        removing={removing} onRemoveOutside={handleRemoveOutside} />
+
       {/* 条件 */}
       <div className="bg-white rounded-3xl shadow-sm border border-slate-100 p-6 space-y-5 no-print">
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
@@ -4333,6 +4509,8 @@ const NcsTargetTab = ({ index, leaseCompanies, judgeFY, setJudgeFY, poolKeys, vi
         <div className="text-sm font-black text-slate-700 mr-2">
           {onlyTargets ? '対象' : '該当'} {targets.length.toLocaleString()} 工場
           <span className="ml-3 text-emerald-700">他社 {judgeFY}年度 合計 {otherTotal.toLocaleString()} 台</span>
+          <span className="ml-3 text-slate-700">{NCS_GOAL_LEASE} {orTotal.toLocaleString()} 台</span>
+          <span className="ml-3 text-amber-700">→ 目標 NCS {goalTotal(orTotal).toLocaleString()} 台（{NCS_GOAL_LABEL}）</span>
           {targets.length > NCS_TARGET_CAP && <span className="text-xs text-amber-600 ml-2">（先頭{NCS_TARGET_CAP}件を表示。地域で絞ってね）</span>}
         </div>
         <button onClick={() => setChecked(prev => new Set([...prev, ...shown.filter(x => x.isTarget).map(x => x.f.key)]))}
@@ -4728,6 +4906,18 @@ const NcsWorkTab = ({ index, judgeFY, pool, visitsByFactory, statusOf, revisitDa
         || a.area.localeCompare(b.area, 'ja') || a.key.localeCompare(b.key, 'ja'));
   }, [all, phone, pref, keyword, visitFilter, onlyRevisit, focus]);
 
+  /** 目標：ターゲットの判定年度 OR × 30%（合計はずらさず工場に配る） */
+  const goals = useMemo(
+    () => allocateGoals(pool.map(x => ({ key: x.key, base: goalBaseQty(index.factories.get(x.key), judgeFY) }))),
+    [pool, index, judgeFY]
+  );
+  /** 判定年度の次の年度の NCS（ターゲット分。目標に対する実績） */
+  const nextFY = judgeFY + 1;
+  const ncsNext = useMemo(
+    () => pool.reduce((t, x) => t + (index.factories.get(x.key)?.byFy?.get(nextFY)?.get(NCS) || 0), 0),
+    [pool, index, nextFY]
+  );
+
   const count = j => all.filter(r => r.judge === j).length;
   const cards = [
     ['ターゲット', pool.length, 'text-slate-800'],
@@ -4735,6 +4925,9 @@ const NcsWorkTab = ({ index, judgeFY, pool, visitsByFactory, statusOf, revisitDa
     ['NCS受注あり', count('won'), 'text-emerald-600'],
     ['未受注', count('open') + count('revisit'), 'text-amber-600'],
     ['再訪問候補', count('revisit'), 'text-rose-600'],
+    [`目標（${NCS_GOAL_LABEL}）`, goals.total.toLocaleString(), 'text-amber-700',
+      `${nextFY}年度 NCS ${ncsNext.toLocaleString()}台${goals.total ? `・達成 ${(ncsNext / goals.total * 100).toFixed(1)}%` : ''}`,
+      `${judgeFY}年度 ${NCS_GOAL_LEASE} ${goals.base.toLocaleString()}台 × ${NCS_GOAL_PCT}%`],
   ];
 
   const toggle = key => setChecked(prev => {
@@ -4819,11 +5012,12 @@ const NcsWorkTab = ({ index, judgeFY, pool, visitsByFactory, statusOf, revisitDa
   return (
     <div className="space-y-4">
       {/* ダイジェスト */}
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-        {cards.map(([label, n, cls]) => (
-          <div key={label} className="bg-white rounded-2xl shadow-sm border border-slate-100 px-4 py-3">
+      <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
+        {cards.map(([label, n, cls, sub, tip]) => (
+          <div key={label} title={tip} className="bg-white rounded-2xl shadow-sm border border-slate-100 px-4 py-3">
             <div className="text-[10px] font-black text-slate-400 tracking-widest">{label}</div>
             <div className={`text-2xl font-black ${cls}`}>{n}</div>
+            {sub && <div className="text-[10px] font-bold text-slate-500">{sub}</div>}
           </div>
         ))}
       </div>
@@ -4927,6 +5121,7 @@ const NcsWorkTab = ({ index, judgeFY, pool, visitsByFactory, statusOf, revisitDa
               <th className={`${th} text-center`}>工場名</th>
               <th className={`${th} text-center bg-green-800`} title={`${judgeFY}/10〜${judgeFY + 1}/9`}>NCS<div className="text-[9px] font-bold text-green-300">{judgeFY}年度</div></th>
               <th className={`${th} text-center bg-green-800`} title={`${judgeFY}/10〜${judgeFY + 1}/9`}>他社<div className="text-[9px] font-bold text-green-300">{judgeFY}年度</div></th>
+              <th className={`${th} text-center bg-green-800`} title={`${judgeFY}年度の${NCS_GOAL_LEASE} × ${NCS_GOAL_PCT}%（合計に合わせて端数を配分）`}>目標<div className="text-[9px] font-bold text-green-300">{NCS_GOAL_LABEL}</div></th>
               <th className={`${th} text-center`}>最終訪問</th>
               <th className={`${th} text-center`}>経過</th>
               <th className={`${th} text-center`}>訪問後 NCS</th>
@@ -4958,6 +5153,10 @@ const NcsWorkTab = ({ index, judgeFY, pool, visitsByFactory, statusOf, revisitDa
                   </td>
                   <td className={`px-2 py-2 text-right font-black bg-emerald-50/50 ${r.fy?.ncs > 0 ? 'text-rose-600' : 'text-slate-300'}`}>{r.fy?.ncs || ''}</td>
                   <td className="px-2 py-2 text-right font-black bg-emerald-50/50 text-slate-700">{r.fy?.other || ''}</td>
+                  <td className="px-2 py-2 text-right font-black bg-emerald-50/50 text-amber-700"
+                    title={r.inPool ? `${NCS_GOAL_LEASE} ${goalBaseQty(index.factories.get(r.key), judgeFY)}台 × ${NCS_GOAL_PCT}%` : 'ターゲット外'}>
+                    {(r.inPool && goals.byKey.get(r.key)) || ''}
+                  </td>
                   <td className="px-2 py-2 text-xs whitespace-nowrap">
                     {st ? (
                       <>
@@ -4990,7 +5189,7 @@ const NcsWorkTab = ({ index, judgeFY, pool, visitsByFactory, statusOf, revisitDa
               );
             })}
             {!shown.length && (
-              <tr><td colSpan={11} className="px-3 py-10 text-center text-slate-400 font-bold">
+              <tr><td colSpan={12} className="px-3 py-10 text-center text-slate-400 font-bold">
                 {onlyRevisit && !phone && !pref && !keyword ? '再訪問候補はいまないよ'
                   : visitFilter === 'visited' && !phone && !pref && !keyword ? 'まだ訪問記録がないよ' : '条件に合う工場がないよ'}
               </td></tr>
@@ -5015,4 +5214,4 @@ const NcsWorkTab = ({ index, judgeFY, pool, visitsByFactory, statusOf, revisitDa
 
 export default App;
 /** テスト用 */
-export { LeaseReportView, NcsWorkTab };
+export { LeaseReportView, NcsWorkTab, NcsTargetTab };
