@@ -3,6 +3,8 @@
  * report は ncsTarget.js の buildVisitReport の戻り値。シートは サマリー／工場別成果／訪問記録 の3枚
  */
 
+import { NCS_GOAL_PCT } from './ncsTarget.js';
+
 const FONT = 'Meiryo UI';
 const HEADER_FILL = 'FF14532D';  // green-900（画面の表の見出しと同じ色味）
 const LABEL_FILL = 'FFECFDF5';   // emerald-50
@@ -29,7 +31,7 @@ const styleBody = (row, { fill, bold } = {}) => {
   row.eachCell({ includeEmpty: true }, c => {
     c.font = { name: FONT, size: 10, bold, color: { argb: TEXT_MAIN } };
     if (fill) c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: fill } };
-    c.alignment = { vertical: 'top', wrapText: true, ...(typeof c.value === 'number' ? { horizontal: 'right' } : {}) };
+    c.alignment = { vertical: 'top', wrapText: true, ...(typeof c.value === 'number' || c.value?.formula ? { horizontal: 'right' } : {}) };
     c.border = BOX;
   });
 };
@@ -69,6 +71,8 @@ export function buildNcsReportWorkbook(ExcelJS, report) {
 
   const kpis = [
     ['ターゲット工場数', s.targetCount, '#,##0'],
+    [`オリックス受注 ${s.goalFY ? `${s.goalFY}年度` : ''}（本）`, s.goalBase || 0, '#,##0'],
+    [`NCS目標（オリックスの${NCS_GOAL_PCT}%・本）`, 'GOAL', '#,##0'],
     ['訪問した工場数', s.visitedFactories, '#,##0'],
     ['延べ訪問回数', s.visits, '#,##0'],
     ['2回以上訪問した工場', s.repeatFactories, '#,##0'],
@@ -84,7 +88,8 @@ export function buildNcsReportWorkbook(ExcelJS, report) {
   for (const [label, value, numFmt] of kpis) {
     const row = ws.getRow(r++);
     row.getCell(1).value = label;
-    row.getCell(2).value = value;
+    // 目標はオリックスの行 × 30% の式（数字を変えて試せるように）
+    row.getCell(2).value = value === 'GOAL' ? { formula: `ROUND(B${r - 2}*${NCS_GOAL_PCT}%,0)`, result: s.goalQty || 0 } : value;
     if (numFmt) row.getCell(2).numFmt = numFmt;
     styleBody(row);
     row.getCell(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: LABEL_FILL } };
@@ -108,6 +113,8 @@ export function buildNcsReportWorkbook(ExcelJS, report) {
   ], monthly, {
     total: { label: '合計', visits: sum('visits'), factories: s.visitedFactories, ncsQty: sum('ncsQty'), ncsSales: Math.round(sum('ncsSales')), firstWon: sum('firstWon') },
   });
+
+  if (report.targets?.length) addTargetSheets(wb, report);
 
   // ---- 工場別成果 ----
   const wf = wb.addWorksheet('工場別成果', { views: [{ state: 'frozen', ySplit: 1 }] });
@@ -155,6 +162,111 @@ export function buildNcsReportWorkbook(ExcelJS, report) {
   if (report.visits.length) wv.autoFilter = { from: 'A1', to: { row: vLast, column: vCols.length } };
 
   return wb;
+}
+
+/** 0 は空欄で見せる */
+const NUM0 = '#,##0;-#,##0;';
+/** 2段になる見出しの行の高さ */
+const HEAD2_HEIGHT = 34;
+/** A4横・幅1ページ・見出しの行を毎ページ印刷 */
+const setPrint = (ws, headRow) => {
+  ws.pageSetup = { paperSize: 9, orientation: 'landscape', fitToPage: true, fitToWidth: 1, fitToHeight: 0 };
+  ws.pageSetup.printTitlesRow = `${headRow}:${headRow}`;
+};
+const titleCell = (ws, text, note) => {
+  ws.getCell('A1').value = text;
+  ws.getCell('A1').font = { name: FONT, size: 14, bold: true, color: { argb: HEADER_FILL } };
+  ws.getCell('A2').value = note;
+  ws.getCell('A2').font = { name: FONT, size: 9, color: { argb: 'FF64748B' } };
+};
+
+/**
+ * 「対象エリア」（県ごとのまとめ）と「ターゲット一覧」（工場ごと）の2枚
+ * report.targets は ncsTarget.js の buildTargetRows の戻り値。県ごとの数字は一覧を SUMIF/COUNTIF する式
+ */
+function addTargetSheets(wb, report) {
+  const ts = report.targets;
+  const fy = report.summary.goalFY;
+  const fyLabel = fy ? `${fy}年度` : '';
+  const LIST = 'ターゲット一覧';
+  const note = `オリックス受注＝${fy ? `${fy}年度（${fy}/10〜${fy + 1}/9）` : '判定年度'}のオルタネーター・スターター・コンプレッサーの本数。`
+    + `NCS目標＝オリックスの${NCS_GOAL_PCT}%（工場ごとに配分。合計は一致）`;
+
+  // ---- 対象エリア ----
+  const wa = wb.addWorksheet('対象エリア', { views: [{ state: 'frozen', ySplit: 4 }] });
+  wa.columns = [{ width: 12 }, { width: 9 }, { width: 16 }, { width: 13 }, { width: 70 }];
+  titleCell(wa, `対象エリア（ターゲット ${ts.length}工場）`, note);
+  const first = 2;
+  const last = ts.length + 1;
+  const rng = col => `'${LIST}'!$${col}$${first}:$${col}$${last}`;
+  const byPref = new Map(); // 一覧の並び（北から）のまま
+  for (const t of ts) {
+    if (!byPref.has(t.pref)) byPref.set(t.pref, { n: 0, base: 0, goal: 0, cities: new Map() });
+    const p = byPref.get(t.pref);
+    p.n++; p.base += t.base; p.goal += t.goal;
+    p.cities.set(t.city, (p.cities.get(t.city) || 0) + 1);
+  }
+  const aRows = [...byPref].map(([pref, p], i) => {
+    const r = 5 + i;
+    return {
+      pref,
+      n: { formula: `COUNTIF(${rng('B')},A${r})`, result: p.n },
+      base: { formula: `SUMIF(${rng('B')},A${r},${rng('G')})`, result: p.base },
+      goal: { formula: `SUMIF(${rng('B')},A${r},${rng('H')})`, result: p.goal },
+      // 工場の多い順（同じなら一覧の並び＝オリックスの多い順）
+      cities: [...p.cities].sort((a, b) => b[1] - a[1]).map(([c, n]) => `${c || '(不明)'} ${n}`).join('・'),
+    };
+  });
+  const aEnd = 4 + aRows.length;
+  const sumCol = (col, result) => ({ formula: `SUM(${col}5:${col}${aEnd})`, result });
+  const baseSum = ts.reduce((t, x) => t + x.base, 0);
+  const goalSum = ts.reduce((t, x) => t + x.goal, 0);
+  addTable(wa, 4, [
+    { header: '県', key: 'pref' },
+    { header: '工場数', key: 'n', numFmt: NUM0 },
+    { header: `オリックス受注 ${fyLabel}（本）`, key: 'base', numFmt: NUM0 },
+    { header: 'NCS目標（本）', key: 'goal', numFmt: NUM0 },
+    { header: '市区町村（工場数）', key: 'cities' },
+  ], aRows, { total: { pref: '合計', n: sumCol('B', ts.length), base: sumCol('C', baseSum), goal: sumCol('D', goalSum) } });
+  wa.getRow(4).height = HEAD2_HEIGHT;
+  // 市区町村は折り返すので、文字数から行の高さを決める（全角2・半角1、幅70で1行およそ80）
+  aRows.forEach((a, i) => {
+    const units = [...a.cities].reduce((t, ch) => t + (ch.charCodeAt(0) < 0x100 ? 1 : 2), 0);
+    wa.getRow(5 + i).height = Math.max(1, Math.ceil(units / 80)) * 17 + 3;
+  });
+  setPrint(wa, 4);
+
+  // ---- ターゲット一覧 ----
+  const wl = wb.addWorksheet(LIST, { views: [{ state: 'frozen', ySplit: 1 }] });
+  const lCols = [
+    { header: 'No', key: 'no', width: 5 },
+    { header: '県', key: 'pref', width: 10 },
+    { header: '市区町村', key: 'city', width: 16 },
+    { header: '工場', key: 'key', width: 30 },
+    { header: '住所', key: 'address', width: 38 },
+    { header: 'TEL', key: 'tel', width: 14 },
+    { header: `オリックス受注 ${fyLabel}（本）`, key: 'base', width: 16, numFmt: NUM0 },
+    { header: 'NCS目標（本）', key: 'goal', width: 10, numFmt: NUM0 },
+    { header: '訪問回数', key: 'visitCount', width: 9, numFmt: NUM0 },
+    { header: '最終訪問', key: 'lastVisit', width: 11 },
+  ];
+  wl.columns = lCols.map(c => ({ width: c.width }));
+  const lRows = ts.map((t, i) => ({ ...t, no: i + 1, lastVisit: fmtIso(t.lastVisit) }));
+  const sumList = (col, result) => ({ formula: `SUM(${col}${first}:${col}${last})`, result });
+  const lEnd = addTable(wl, 1, lCols, lRows, {
+    total: {
+      key: `合計 ${ts.length}工場`,
+      base: sumList('G', baseSum),
+      goal: sumList('H', goalSum),
+      visitCount: sumList('I', ts.reduce((t, x) => t + (x.visitCount || 0), 0)),
+    },
+  });
+  wl.autoFilter = { from: 'A1', to: { row: lEnd - 1, column: lCols.length } };
+  wl.getRow(1).height = HEAD2_HEIGHT;
+  setPrint(wl, 1);
+  lRows.forEach((t, i) => {
+    wl.getRow(i + 2).getCell(8).font = { name: FONT, size: 10, bold: true, color: { argb: TEXT_NCS } };
+  });
 }
 
 export async function writeNcsReportXlsx(report, fileName) {

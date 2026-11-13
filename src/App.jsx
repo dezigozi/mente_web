@@ -19,7 +19,7 @@ import { writeLeaseReportXlsx } from './utils/leaseReportXlsx';
 import {
   NCS, buildFactoryIndex, latestCompleteFiscalYear, buildNcsTargets, splitFy, topOrderers,
   buildPostVisitStats, dateNum, fmtDateNum, daysBetween, areaOf, cityOf, factoryMatches, visitAreasByDate, ncsJudge, fiscalYearOct, buildVisitReport,
-  NCS_REGIONS, inNcsArea, buildAreaStats, NCS_GOAL_LEASE, NCS_GOAL_PCT, goalBaseQty, goalTotal, allocateGoals,
+  NCS_REGIONS, inNcsArea, buildAreaStats, NCS_GOAL_LEASE, NCS_GOAL_PCT, goalBaseQty, goalTotal, allocateGoals, buildTargetRows,
 } from './utils/ncsTarget';
 import {
   loadAll, saveList, saveVisit, deleteVisit, exportAll, importAll, newId,
@@ -4064,12 +4064,17 @@ const NcsVisitView = ({ rows, leaseCompanies }) => {
       const address = p?.address || f?.address || '';
       return { area: areaOf(address), address, tel: p?.tel || f?.tel || '' };
     };
+    const goalBase = pool.reduce((t, x) => t + goalBaseQty(index.factories.get(x.key), judgeFY), 0);
     const report = buildVisitReport({
       rows, itemOk: ncsItemOk, visits, from, to, lastDate: index.lastDate,
-      targetCount: pool.length, todayNum, revisitDays, infoOf,
+      targetCount: pool.length, goalFY: judgeFY, goalBase, todayNum, revisitDays, infoOf,
     });
-    await writeNcsReportXlsx(report, `NCS訪問実績_${from.replace(/-/g, '')}-${to.replace(/-/g, '')}.xlsx`);
-  }, [rows, visits, index, pool, todayNum, revisitDays]);
+    const targets = buildTargetRows(pool, index.factories, judgeFY, key => {
+      const vs = visitsByFactory.get(key);
+      return { visitCount: vs?.length || 0, lastVisit: vs?.length ? vs[vs.length - 1].date : '' };
+    });
+    await writeNcsReportXlsx({ ...report, targets }, `NCS訪問実績_${from.replace(/-/g, '')}-${to.replace(/-/g, '')}.xlsx`);
+  }, [rows, visits, visitsByFactory, index, pool, judgeFY, todayNum, revisitDays]);
 
   // ---- バックアップ ----
   const fileRef = useRef(null);

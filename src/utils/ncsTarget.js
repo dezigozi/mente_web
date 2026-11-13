@@ -253,10 +253,12 @@ export function ncsJudge(st) {
  * 方針書用の訪問・受注レポート（期間内の訪問と、その訪問のあとの受注）
  * - 工場ごとの起点 = 期間内の最初の訪問日。受注はその翌日〜期間の終わり（データ最終日まで）
  * - 月別の受注は受注日の月で数える
+ * - 目標：ターゲットの goalFY 年度の OR 台数（goalBase）× 30%
  * @param {{ rows:object[], itemOk:Function, visits:object[], from:string, to:string, lastDate:number,
- *           targetCount:number, todayNum:number, revisitDays:number, infoOf:(key:string)=>{area:string,address:string,tel:string} }} opt
+ *           targetCount:number, goalFY?:number, goalBase?:number,
+ *           todayNum:number, revisitDays:number, infoOf:(key:string)=>{area:string,address:string,tel:string} }} opt
  */
-export function buildVisitReport({ rows, itemOk, visits, from, to, lastDate, targetCount, todayNum, revisitDays, infoOf }) {
+export function buildVisitReport({ rows, itemOk, visits, from, to, lastDate, targetCount, goalFY = 0, goalBase = 0, todayNum, revisitDays, infoOf }) {
   const fromN = dateNum(from);
   const toN = dateNum(to);
   const inPeriod = visits
@@ -346,6 +348,9 @@ export function buildVisitReport({ rows, itemOk, visits, from, to, lastDate, tar
     from: fromN, to: toN, dataLast: Math.min(lastDate || toN, toN),
     summary: {
       targetCount,
+      goalFY,
+      goalBase,
+      goalQty: goalTotal(goalBase),
       visitedFactories: factories.length,
       visits: inPeriod.length,
       repeatFactories: factories.filter(f => f.visitCount >= 2).length,
@@ -435,4 +440,35 @@ export function allocateGoals(items, pct = NCS_GOAL_PCT) {
   [...rows].sort((a, b) => b.rem - a.rem || b.base - a.base || a.key.localeCompare(b.key, 'ja'))
     .forEach(x => { if (left > 0 && x.rem > 0) { x.goal++; left--; } });
   return { base, total, byKey: new Map(rows.map(x => [x.key, x.goal])) };
+}
+
+// ===== 方針書用のターゲット一覧 =====
+/** 県の並び順（北から。わからない県は最後） */
+const PREF_ORDER = new Map(NCS_REGIONS.flatMap(([, ps]) => ps).map((p, i) => [p, i]));
+export const prefRank = p => (PREF_ORDER.has(p) ? PREF_ORDER.get(p) : 99);
+
+/**
+ * ターゲットの一覧（県は北から、県の中はオリックスの多い市区町村→工場の順）。NCS目標は合計がずれないよう工場に配る
+ * @param {{ key:string, pref?:string, address?:string, tel?:string }[]} pool
+ * @param {Map} factories buildFactoryIndex の factories
+ * @param {number} fy 目標の元にする年度（判定年度）
+ * @param {(key:string) => { visitCount:number, lastVisit:string }} visitOf
+ */
+export function buildTargetRows(pool, factories, fy, visitOf) {
+  const items = pool.map(x => {
+    const f = factories.get(x.key);
+    const address = x.address || f?.address || '';
+    return {
+      key: x.key, pref: x.pref || f?.pref || '', city: cityOf(address), address, tel: x.tel || f?.tel || '',
+      base: goalBaseQty(f, fy), ...visitOf(x.key),
+    };
+  });
+  const { byKey } = allocateGoals(items);
+  const cityBase = new Map();
+  const cityKey = x => `${x.pref}|${x.city}`;
+  for (const x of items) cityBase.set(cityKey(x), (cityBase.get(cityKey(x)) || 0) + x.base);
+  return items.map(x => ({ ...x, goal: byKey.get(x.key) || 0 }))
+    .sort((a, b) => prefRank(a.pref) - prefRank(b.pref) || a.pref.localeCompare(b.pref, 'ja')
+      || cityBase.get(cityKey(b)) - cityBase.get(cityKey(a)) || a.city.localeCompare(b.city, 'ja')
+      || b.base - a.base || a.key.localeCompare(b.key, 'ja'));
 }
